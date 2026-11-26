@@ -7,20 +7,59 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name (e.g. v1.4.7)'
+        description: 'Tag đã tạo, ví dụ v2.0.0'
         required: true
-        default: 'v1.4.7'
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build-and-release:
-    name: Build & Release (Apple Silicon)
+    name: Build & Release (Universal 2)
     runs-on: macos-15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          # workflow_dispatch chạy từ nhánh mặc định; build phải lấy mã của tag.
+          ref: ${{ inputs.tag_name || github.ref }}
+          fetch-depth: 0
+
+      - name: Validate Release Tag
+        id: vars
+        env:
+          TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag không hợp lệ: $TAG_NAME"
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+            echo "::error::Tag $TAG_NAME chưa tồn tại. Hãy tạo và push tag trước khi chạy workflow."
+            exit 1
+          fi
+          if [ "$(git rev-list -n 1 "refs/tags/$TAG_NAME")" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::Checkout không trùng commit của tag $TAG_NAME."
+            exit 1
+          fi
+          VERSION="$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')"
+          if [[ "$TAG_NAME" != "v$VERSION" && "$TAG_NAME" != "v$VERSION"-* ]]; then
+            echo "::error::Tag $TAG_NAME không khớp version.json ($VERSION)."
+            exit 1
+          fi
+          printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          notes = json.loads(Path('version.json').read_text(encoding='utf-8')).get('notes', '')
+          Path('release_notes.md').write_text(notes.rstrip() + '\n', encoding='utf-8')
+          PY
 
       - name: Make Build Script Executable
         run: chmod +x build.sh
@@ -99,7 +138,19 @@ jobs:
                 -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" 2>&1)"; then
             fail "set-key-partition-list thất bại: $(echo "$PART_OUT" | tail -3 | tr '\n' ' ')"
           fi
+          # Chứng chỉ tự ký cần được trust ở user domain để codesign --verify
+          # không trả CSSMERR_TP_NOT_TRUSTED trên runner mới.
+          if ! openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -clcerts -nokeys \
+                -passin "pass:${SIGNING_P12_PASSWORD}" \
+                | openssl x509 -out "$RUNNER_TEMP/cert.pem"; then
+            fail "Không trích được certificate từ p12."
+          fi
+          if ! security add-trusted-cert -r trustRoot -p codeSign \
+                -k "$KEYCHAIN_PATH" "$RUNNER_TEMP/cert.pem"; then
+            fail "Không trust được chứng chỉ ký ở user domain."
+          fi
           rm -f "$RUNNER_TEMP/cert.p12"
+          rm -f "$RUNNER_TEMP/cert.pem"
 
           # codesign chỉ tìm identity trong các keychain thuộc search list.
           # Runner là máy dùng một lần nên không cần khôi phục lại danh sách.
@@ -127,7 +178,7 @@ jobs:
           esac
 
       - name: Compile and Package HyperMac Bundle
-        run: ./build.sh --no-run
+        run: ./build.sh --no-run --universal
         env:
           CI: true
           HYPERMAC_SIGN_IDENTITY: HyperMac Self-Signed
@@ -140,28 +191,36 @@ jobs:
           codesign -dv --verbose=4 build/HyperMac.app 2>&1 | grep -F "Authority=HyperMac Self-Signed"
           codesign -d -r- build/HyperMac.app 2>&1 | tail -1
 
-      - name: Determine Release Tag and Notes
-        id: vars
+      - name: Verify Installer and ZIP Packages
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          test -s build/HyperMac.dmg
+          test -s build/HyperMac.zip
+          hdiutil verify build/HyperMac.dmg
+          unzip -tqq build/HyperMac.zip
+          unzip -Z -1 build/HyperMac.zip | grep -Fx 'HyperMac.app/Contents/MacOS/HyperMac' >/dev/null
+          lipo -verify_arch arm64 x86_64 build/HyperMac.app/Contents/MacOS/HyperMac
+          codesign --verify --deep --strict build/HyperMac.app
+          BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/HyperMac.app/Contents/Info.plist)"
+          TAG_VERSION="${{ steps.vars.outputs.tag }}"
+          if [ "v$BUNDLE_VERSION" != "${TAG_VERSION%%-*}" ]; then
+            echo "::error::Phiên bản trong app ($BUNDLE_VERSION) không khớp tag ($TAG_VERSION)."
+            exit 1
           fi
-          python3 -c "import json; data = json.load(open('version.json')); print(data.get('notes', ''))" > release_notes.md 2>/dev/null || true
 
       - name: Create GitHub Release and Upload Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: HyperMac ${{ steps.vars.outputs.tag }}
           body_path: release_notes.md
-          files: build/HyperMac.zip
+          files: |
+            build/HyperMac.dmg
+            build/HyperMac.zip
+          fail_on_unmatched_files: true
           draft: false
-          # Tag có hậu tố (v1.6.0-rc1, v1.6.0-test) → release nháp thử nghiệm,
-          # không bị UpdateManager coi là bản chính thức.
+          # Tag có hậu tố (v2.0.0-rc1, v2.0.0-test) → pre-release thử nghiệm.
           prerelease: ${{ contains(steps.vars.outputs.tag, '-') }}
-          generate_release_notes: true
 
       - name: Cleanup Signing Keychain
         if: always()
