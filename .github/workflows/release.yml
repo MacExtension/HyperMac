@@ -2,6 +2,8 @@ name: Build & Release HyperMac
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -25,32 +27,47 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # workflow_dispatch chạy từ nhánh mặc định; build phải lấy mã của tag.
-          ref: ${{ inputs.tag_name || github.ref }}
+          # Branch push build commit vừa push; tag/manual run build đúng tag đã chọn.
+          ref: ${{ inputs.tag_name || github.sha }}
           fetch-depth: 0
 
       - name: Validate Release Tag
         id: vars
         env:
-          TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          RELEASE_INPUT_TAG: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')"
+          if [[ "$RELEASE_EVENT" == "push" && "$RELEASE_REF" == "refs/heads/main" ]]; then
+            # Mỗi push main cập nhật release ổn định theo version.json.
+            TAG_NAME="v$VERSION"
+          else
+            TAG_NAME="${RELEASE_INPUT_TAG:-$RELEASE_REF_NAME}"
+          fi
+
           if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Tag không hợp lệ: $TAG_NAME"
             exit 1
           fi
-          if ! git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
-            echo "::error::Tag $TAG_NAME chưa tồn tại. Hãy tạo và push tag trước khi chạy workflow."
-            exit 1
-          fi
-          if [ "$(git rev-list -n 1 "refs/tags/$TAG_NAME")" != "$(git rev-parse HEAD)" ]; then
-            echo "::error::Checkout không trùng commit của tag $TAG_NAME."
-            exit 1
-          fi
-          VERSION="$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')"
           if [[ "$TAG_NAME" != "v$VERSION" && "$TAG_NAME" != "v$VERSION"-* ]]; then
             echo "::error::Tag $TAG_NAME không khớp version.json ($VERSION)."
             exit 1
+          fi
+
+          # Main push có thể tạo tag mới qua action-gh-release hoặc cập nhật
+          # assets của tag phiên bản đã phát hành. Tag/manual run phải có sẵn.
+          if [[ "$RELEASE_EVENT" != "push" || "$RELEASE_REF" != "refs/heads/main" ]]; then
+            if ! git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+              echo "::error::Tag $TAG_NAME chưa tồn tại."
+              exit 1
+            fi
+            if [ "$(git rev-list -n 1 "refs/tags/$TAG_NAME")" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::Checkout không trùng commit của tag $TAG_NAME."
+              exit 1
+            fi
           fi
           printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
           python3 - <<'PY'
@@ -213,6 +230,7 @@ jobs:
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: HyperMac ${{ steps.vars.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           body_path: release_notes.md
           files: |
             build/HyperMac.dmg
@@ -221,6 +239,7 @@ jobs:
           draft: false
           # Tag có hậu tố (v2.0.0-rc1, v2.0.0-test) → pre-release thử nghiệm.
           prerelease: ${{ contains(steps.vars.outputs.tag, '-') }}
+          make_latest: true
 
       - name: Cleanup Signing Keychain
         if: always()
