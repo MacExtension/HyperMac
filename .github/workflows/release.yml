@@ -138,34 +138,41 @@ jobs:
           }
 
           ensure_der "$RUNNER_TEMP/cert.p12" || fail "Secret không phải p12 DER và cũng không decode thêm được (size $(wc -c < "$RUNNER_TEMP/cert.p12" | tr -d ' ') bytes)."
+          echo "🔎 Kiểm tra mật khẩu và định dạng p12..."
           if ! P12_INFO="$(openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -noout -passin "pass:${SIGNING_P12_PASSWORD}" 2>&1)"; then
             fail "Không đọc được p12 (size $(wc -c < "$RUNNER_TEMP/cert.p12" | tr -d ' ') bytes, sha256 $(shasum -a 256 "$RUNNER_TEMP/cert.p12" | cut -d' ' -f1)): $(echo "$P12_INFO" | tail -2 | tr '\n' ' ')"
           fi
 
-          if ! IMPORT_OUT="$(security import "$RUNNER_TEMP/cert.p12" \
+          echo "🔐 Import identity vào keychain tạm..."
+          if ! IMPORT_OUT="$(perl -e 'alarm 60; exec @ARGV' security import "$RUNNER_TEMP/cert.p12" \
                 -P "$SIGNING_P12_PASSWORD" \
                 -A -t cert -f pkcs12 \
                 -k "$KEYCHAIN_PATH" 2>&1)"; then
-            fail "security import thất bại: $(echo "$IMPORT_OUT" | tail -3 | tr '\n' ' ')"
+            fail "security import thất bại hoặc quá 60 giây: $(echo "$IMPORT_OUT" | tail -3 | tr '\n' ' ')"
           fi
           echo "$IMPORT_OUT"
 
-          if ! PART_OUT="$(security set-key-partition-list \
+          echo "🔑 Cấp quyền dùng key cho codesign..."
+          if ! PART_OUT="$(perl -e 'alarm 60; exec @ARGV' security set-key-partition-list \
                 -S apple-tool:,apple:,codesign: \
                 -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" 2>&1)"; then
-            fail "set-key-partition-list thất bại: $(echo "$PART_OUT" | tail -3 | tr '\n' ' ')"
+            fail "set-key-partition-list thất bại hoặc quá 60 giây: $(echo "$PART_OUT" | tail -3 | tr '\n' ' ')"
           fi
-          # Chứng chỉ tự ký cần được trust ở user domain để codesign --verify
-          # không trả CSSMERR_TP_NOT_TRUSTED trên runner mới.
+          echo "📄 Trích certificate để trust..."
           if ! openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -clcerts -nokeys \
                 -passin "pass:${SIGNING_P12_PASSWORD}" \
                 | openssl x509 -out "$RUNNER_TEMP/cert.pem"; then
             fail "Không trích được certificate từ p12."
           fi
-          if ! security add-trusted-cert -r trustRoot -p codeSign \
-                -k "$KEYCHAIN_PATH" "$RUNNER_TEMP/cert.pem"; then
-            fail "Không trust được chứng chỉ ký ở user domain."
+          # User-domain trust yêu cầu xác thực qua GUI; runner macOS headless có
+          # thể chờ SecurityAgent vô hạn. Dùng admin trust với sudo và giới hạn 30s.
+          echo "🛡 Trust certificate trong System.keychain..."
+          if ! perl -e 'alarm 30; exec @ARGV' sudo -n security add-trusted-cert \
+                -d -r trustRoot -p codeSign \
+                -k /Library/Keychains/System.keychain "$RUNNER_TEMP/cert.pem"; then
+            fail "Không trust được chứng chỉ trong System.keychain (lệnh có timeout 30 giây)."
           fi
+          echo "✅ Certificate đã được trust."
           rm -f "$RUNNER_TEMP/cert.p12"
           rm -f "$RUNNER_TEMP/cert.pem"
 
