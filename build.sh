@@ -49,26 +49,51 @@ fi
 if [ "$BUILD_UNIVERSAL" = "true" ]; then
     echo "🔨 Building HyperMac (Release - Universal 2: arm64 + x86_64)..."
     mkdir -p .build/bin_arm64 .build/bin_x86_64 .build/release
+    rm -f .build/bin_arm64/HyperMac .build/bin_x86_64/HyperMac
+    rm -f .build/out/Products/Release/HyperMac .build/release/HyperMac
     echo "  -> Compiling arm64 (Apple Silicon)..."
-    swift build -c release --triple arm64-apple-macosx >/dev/null 2>&1 || swift build -c release
+    if ! swift build -c release --triple arm64-apple-macosx; then
+        echo "❌ Không biên dịch được binary arm64."
+        exit 1
+    fi
     if [ -f ".build/out/Products/Release/HyperMac" ]; then
         cp .build/out/Products/Release/HyperMac .build/bin_arm64/HyperMac
     elif [ -f ".build/release/HyperMac" ]; then
         cp .build/release/HyperMac .build/bin_arm64/HyperMac
+    else
+        echo "❌ Không tìm thấy binary arm64 sau khi biên dịch."
+        exit 1
+    fi
+    if ! lipo .build/bin_arm64/HyperMac -verify_arch arm64; then
+        echo "❌ Binary arm64 không chứa kiến trúc arm64: $(lipo -archs .build/bin_arm64/HyperMac 2>&1)"
+        exit 1
     fi
 
     echo "  -> Compiling x86_64 (Intel)..."
-    swift build -c release --triple x86_64-apple-macosx >/dev/null 2>&1 || true
+    rm -f .build/out/Products/Release/HyperMac .build/release/HyperMac
+    if ! swift build -c release --triple x86_64-apple-macosx; then
+        echo "❌ Không biên dịch được binary x86_64."
+        exit 1
+    fi
     if [ -f ".build/out/Products/Release/HyperMac" ]; then
         cp .build/out/Products/Release/HyperMac .build/bin_x86_64/HyperMac
+    elif [ -f ".build/release/HyperMac" ]; then
+        cp .build/release/HyperMac .build/bin_x86_64/HyperMac
+    else
+        echo "❌ Không tìm thấy binary x86_64 sau khi biên dịch."
+        exit 1
+    fi
+    if ! lipo .build/bin_x86_64/HyperMac -verify_arch x86_64; then
+        echo "❌ Binary Intel không chứa kiến trúc x86_64: $(lipo -archs .build/bin_x86_64/HyperMac 2>&1)"
+        exit 1
     fi
 
     BINARY=".build/release/HyperMac"
-    if [ -f ".build/bin_arm64/HyperMac" ] && [ -f ".build/bin_x86_64/HyperMac" ]; then
-        echo "  -> Merging with lipo (Universal 2)..."
-        lipo -create .build/bin_arm64/HyperMac .build/bin_x86_64/HyperMac -output "$BINARY"
-    elif [ -f ".build/bin_arm64/HyperMac" ]; then
-        cp .build/bin_arm64/HyperMac "$BINARY"
+    echo "  -> Merging with lipo (Universal 2)..."
+    lipo -create .build/bin_arm64/HyperMac .build/bin_x86_64/HyperMac -output "$BINARY"
+    if ! lipo "$BINARY" -verify_arch arm64 x86_64; then
+        echo "❌ Binary Universal 2 không đủ hai kiến trúc: $(lipo -archs "$BINARY" 2>&1)"
+        exit 1
     fi
 else
     echo "⚡ Building HyperMac (Tốc độ cao - Chip M: M1/M2/M3/M4)..."
