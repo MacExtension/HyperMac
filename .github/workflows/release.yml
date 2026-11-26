@@ -223,7 +223,7 @@ jobs:
           hdiutil verify build/HyperMac.dmg
           unzip -tqq build/HyperMac.zip
           unzip -Z -1 build/HyperMac.zip | grep -Fx 'HyperMac.app/Contents/MacOS/HyperMac' >/dev/null
-          lipo -verify_arch arm64 x86_64 build/HyperMac.app/Contents/MacOS/HyperMac
+          lipo build/HyperMac.app/Contents/MacOS/HyperMac -verify_arch arm64 x86_64
           codesign --verify --deep --strict build/HyperMac.app
           BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/HyperMac.app/Contents/Info.plist)"
           TAG_VERSION="${{ steps.vars.outputs.tag }}"
