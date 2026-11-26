@@ -218,15 +218,34 @@ jobs:
       - name: Verify Installer and ZIP Packages
         run: |
           set -euo pipefail
-          test -s build/HyperMac.dmg
-          test -s build/HyperMac.zip
+          APP_BINARY=build/HyperMac.app/Contents/MacOS/HyperMac
+          if [ ! -s build/HyperMac.dmg ] || [ ! -s build/HyperMac.zip ]; then
+            echo "::error::Thiếu file HyperMac.dmg hoặc HyperMac.zip."
+            ls -lh build || true
+            exit 1
+          fi
           hdiutil verify build/HyperMac.dmg
-          unzip -tqq build/HyperMac.zip
-          unzip -Z -1 build/HyperMac.zip | grep -Fx 'HyperMac.app/Contents/MacOS/HyperMac' >/dev/null
-          lipo build/HyperMac.app/Contents/MacOS/HyperMac -verify_arch arm64 x86_64
+          echo "📦 Kiểm tra ZIP..."
+          if ! unzip -tqq build/HyperMac.zip; then
+            echo "::error::ZIP bị lỗi hoặc không đọc được."
+            exit 1
+          fi
+          ZIP_ENTRIES="$(unzip -Z -1 build/HyperMac.zip)"
+          if ! printf '%s\n' "$ZIP_ENTRIES" | grep -Fx 'HyperMac.app/Contents/MacOS/HyperMac' >/dev/null; then
+            echo "::error::ZIP thiếu executable HyperMac.app/Contents/MacOS/HyperMac."
+            printf '%s\n' "$ZIP_ENTRIES" | head -40
+            exit 1
+          fi
+          echo "📐 Kiến trúc app: $(lipo -archs "$APP_BINARY")"
+          if ! lipo "$APP_BINARY" -verify_arch arm64 x86_64; then
+            echo "::error::App không phải Universal 2; cần có arm64 và x86_64."
+            exit 1
+          fi
+          echo "🔏 Kiểm tra chữ ký app..."
           codesign --verify --deep --strict build/HyperMac.app
           BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/HyperMac.app/Contents/Info.plist)"
           TAG_VERSION="${{ steps.vars.outputs.tag }}"
+          echo "🏷 Phiên bản app: $BUNDLE_VERSION; release: $TAG_VERSION"
           if [ "v$BUNDLE_VERSION" != "${TAG_VERSION%%-*}" ]; then
             echo "::error::Phiên bản trong app ($BUNDLE_VERSION) không khớp tag ($TAG_VERSION)."
             exit 1
