@@ -3,6 +3,7 @@ import AppKit
 import CoreGraphics
 import SwiftUI
 import Combine
+import Vision
 
 public enum ResizeHandle: CaseIterable, Sendable {
     case topLeft, topCenter, topRight
@@ -43,6 +44,8 @@ public class ScreenshotManager: ObservableObject {
 
     // Active Capture State
     @Published public var isActive: Bool = false
+    @Published public private(set) var isOCRMode: Bool = false
+    @Published public private(set) var isRecognizingText: Bool = false
     @Published public var screenImage: CGImage? = nil {
         didSet {
             blurGeneration &+= 1
@@ -176,12 +179,18 @@ public class ScreenshotManager: ObservableObject {
         self.isColorPaletteExpanded = false
         self.toastMessage = nil
         self.isSpaceHeld = false
+        self.isOCRMode = false
 
         // 3. Create or update overlay panel on the target screen
         createOrUpdateOverlayPanel(on: targetScreen)
 
         self.isActive = true
         gIsScreenshotActive = true
+    }
+
+    public func startOCRCapture() {
+        startCapture()
+        if isActive { isOCRMode = true }
     }
 
     // MARK: - Capture Screen CGImage
@@ -268,6 +277,8 @@ public class ScreenshotManager: ObservableObject {
     // MARK: - Cancel Capture
 
     public func cancelCapture() {
+        isOCRMode = false
+        isRecognizingText = false
         cancelTextEditing()
         if let panel = overlayPanel {
             panel.orderOut(nil)
@@ -469,6 +480,52 @@ public class ScreenshotManager: ObservableObject {
         ctx.restoreGState()
 
         return ctx.makeImage()
+    }
+
+    /// Nhận dạng hoàn toàn trên máy, giữ thứ tự dòng theo vị trí trên ảnh.
+    public func recognizeSelectedText() {
+        guard isActive, !isRecognizingText, let image = renderCompositeImage() else { return }
+        isRecognizingText = true
+        let captureGeneration = screenImage
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.usesLanguageCorrection = true
+                let supported = try request.supportedRecognitionLanguages()
+                let preferred = ["vi-VN", "en-US"].filter { supported.contains($0) }
+                if !preferred.isEmpty { request.recognitionLanguages = preferred }
+                let handler = VNImageRequestHandler(cgImage: image, options: [:])
+                try handler.perform([request])
+                let observations = (request.results ?? []).sorted { lhs, rhs in
+                    let rowTolerance = min(lhs.boundingBox.height, rhs.boundingBox.height) * 0.5
+                    if abs(lhs.boundingBox.midY - rhs.boundingBox.midY) > rowTolerance {
+                        return lhs.boundingBox.midY > rhs.boundingBox.midY
+                    }
+                    return lhs.boundingBox.minX < rhs.boundingBox.minX
+                }
+                let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isActive, self.screenImage === captureGeneration else { return }
+                    self.isRecognizingText = false
+                    guard !text.isEmpty else {
+                        self.toastMessage = tr("Không tìm thấy chữ trong vùng chọn.", "No text found in the selected area.")
+                        return
+                    }
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    NSSound(named: "Glass")?.play()
+                    self.cancelCapture()
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isActive else { return }
+                    self.isRecognizingText = false
+                    self.toastMessage = tr("Không quét được chữ: \(error.localizedDescription)",
+                                          "Could not recognize text: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     // MARK: - Copy Action (⌘C / LightShot Style)

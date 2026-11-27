@@ -63,6 +63,7 @@ public struct ScreenshotOverlayView: View {
                                 if !manager.hasSelection {
                                     if manager.selectionRect.width > 20 && manager.selectionRect.height > 20 {
                                         manager.hasSelection = true
+                                        if manager.isOCRMode { manager.recognizeSelectedText() }
                                     } else {
                                         manager.selectionRect = .zero
                                         manager.hasSelection = false
@@ -542,7 +543,7 @@ public struct ScreenshotOverlayView: View {
         let bottomBarH: CGFloat = 38
         let bottomOnBelow = (sel.maxY + bottomBarH + 12) <= geo.size.height
         var bottomY = bottomOnBelow ? (sel.maxY + 6) : max(10, sel.minY - bottomBarH - 6)
-        let bottomBarW: CGFloat = min(280, geo.size.width - 20)
+        let bottomBarW: CGFloat = min(350, geo.size.width - 20)
         let bottomX = min(geo.size.width - bottomBarW - 10, max(10, sel.maxX - bottomBarW))
         let sideBounds = CGRect(x: sideX, y: sideY, width: sideBarW, height: sideBarH)
         if sideBounds.intersects(CGRect(x: bottomX, y: bottomY, width: bottomBarW, height: bottomBarH)) {
@@ -740,6 +741,18 @@ public struct ScreenshotOverlayView: View {
             .buttonStyle(.plain)
             .disabled(!manager.canExport)
             .help(tr("Sao chép ảnh chất lượng cao vào Clipboard (⌘C)", "Copy high-res image to clipboard (⌘C)"))
+
+            Button { manager.recognizeSelectedText() } label: {
+                Label("OCR", systemImage: "text.viewfinder")
+                    .font(.system(size: FS.caption, weight: .semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: Rad.sm).fill(Color.white.opacity(0.16)))
+                    .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(!manager.canExport || manager.isRecognizingText)
+            .help(tr("Quét chữ và sao chép vào Clipboard (⌘O)", "Recognize and copy text (⌘O)"))
 
             // 2. Save Button (⌘S -> Downloads/Screenshots)
             Button {
