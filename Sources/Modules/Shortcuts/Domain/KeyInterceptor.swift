@@ -421,6 +421,12 @@ private func eventTapCallback(
                 return nil
             }
 
+            // ⌘O -> recognize text in the selected screenshot area.
+            if hasCmd && !hasCtrl && !hasAlt && !hasShift && keycode == 31 {
+                DispatchQueue.main.async { ScreenshotManager.shared.recognizeSelectedText() }
+                return nil
+            }
+
             // ⌘V (keycode 9) -> Save high-res screenshot to Downloads/Screenshots
             if hasCmd && !hasCtrl && !hasAlt && !hasShift && keycode == 9 {
                 DispatchQueue.main.async {
@@ -608,7 +614,7 @@ func configuredShortcutMatch(_ key: UInt16, flags: CGEventFlags) -> ShortcutMatc
     guard let match = gShortcutConfiguration.match(key, flags: flags) else { return nil }
     let enabled: Bool
     switch match.action {
-    case .screenshot: enabled = gIsScreenshotEnabled
+    case .screenshot, .ocr: enabled = gIsScreenshotEnabled
     case .clipboard: enabled = gIsClipboardEnabled
     case .switchWindows: enabled = gIsAltTabEnabled
     case .menuBar: enabled = gIsMenuBarHiderEnabled

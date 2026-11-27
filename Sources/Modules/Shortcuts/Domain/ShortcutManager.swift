@@ -40,7 +40,7 @@ struct ShortcutBinding: Codable, Equatable, Hashable {
 }
 
 enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
-    case screenshot, clipboard, switchWindows
+    case screenshot, ocr, clipboard, switchWindows
     case leftHalf, rightHalf, topHalf, bottomHalf, maximize, center, restoreWindow
     case topLeft, topRight, bottomLeft, bottomRight
     case nextDisplay, previousDisplay, restorePrimaryDisplay, menuBar
@@ -48,6 +48,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
     var title: String {
         switch self {
         case .screenshot: return tr("Chụp màn hình", "Screenshot")
+        case .ocr: return tr("Quét chữ màn hình", "Screen OCR")
         case .clipboard: return tr("Mở Clipboard", "Open Clipboard")
         case .switchWindows: return tr("Chuyển cửa sổ", "Switch windows")
         case .leftHalf: return tr("Nửa trái", "Left half")
@@ -72,6 +73,7 @@ enum ShortcutAction: String, CaseIterable, Codable, Identifiable {
         let oc: CGEventFlags = [.maskAlternate, .maskCommand]
         switch self {
         case .screenshot: return [.init(18, [.maskCommand, .maskShift]), .init(118, [])]
+        case .ocr: return [.init(19, [.maskCommand, .maskShift])]
         case .clipboard: return [.init(8, [.maskCommand, .maskShift])]
         case .switchWindows: return [.init(48, .maskCommand), .init(48, .maskAlternate)]
         case .leftHalf: return [.init(123, co)]
@@ -298,6 +300,7 @@ final class ShortcutManager: ObservableObject {
         if let snap = action.snapAction { WindowSnapManager.shared.snapActiveWindow(snap); return }
         switch action {
         case .screenshot: ScreenshotManager.shared.startCapture()
+        case .ocr: ScreenshotManager.shared.startOCRCapture()
         case .clipboard: ClipboardManager.shared.toggleHUD()
         case .nextDisplay: WindowSnapManager.shared.moveActiveWindowToDisplay(isNext: true)
         case .previousDisplay: WindowSnapManager.shared.moveActiveWindowToDisplay(isNext: false)
