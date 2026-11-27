@@ -24,12 +24,13 @@
 | Nhóm | Tính năng |
 | --- | --- |
 | Cửa sổ | Chia nửa hoặc chia góc, căn giữa, phóng to, khôi phục kích thước cũ và chuyển cửa sổ giữa các màn hình. Trình chuyển cửa sổ có ảnh xem trước, điều hướng bằng bàn phím và lọc theo màn hình. |
-| Clipboard | Lưu lịch sử văn bản, ảnh, liên kết và mã màu; tìm kiếm, ghim, dán nhanh và tự dọn theo giới hạn số mục hoặc số ngày. |
+| Clipboard | Lưu lịch sử văn bản, ảnh, liên kết và mã màu bằng AES-256-GCM; tìm kiếm, ghim, dán nhanh và tự dọn theo giới hạn số mục hoặc số ngày. |
 | Màn hình | Chỉnh sáng màn hình ngoài bằng F1/F2 khi màn hình hỗ trợ DDC/CI; chọn độ phân giải và tần số quét; tạo màn hình ảo và tắt tối màn hình chính khi cần điều khiển từ xa. |
-| Chụp màn hình | Chọn vùng chụp, vẽ và thêm chữ, làm mờ hoặc làm pixel vùng nhạy cảm, sao chép hoặc lưu ảnh. |
-| Pin và nhiệt độ | Đặt giới hạn sạc, sạc đầy tạm thời, theo dõi nhiệt độ và tốc độ quạt. Trên máy có quạt, chọn Hệ thống, Medium, High hoặc kéo thanh tốc độ thủ công. |
+| Chụp màn hình | Chọn vùng chụp, vẽ và thêm chữ, làm mờ hoặc làm pixel vùng nhạy cảm, sao chép hoặc lưu ảnh; quét chữ offline bằng OCR tiếng Việt và tiếng Anh. |
+| Pin và nhiệt độ | Đặt giới hạn sạc, sạc đầy tạm thời, theo dõi nhiệt độ và tốc độ quạt. Trên máy có quạt, chọn Hệ thống, Medium, High, thanh tốc độ hoặc đường cong theo nhiệt độ. Mac bàn hiện trạng thái nguồn AC. |
 | Theo dõi hệ thống | Xem CPU, RAM, GPU và tốc độ đọc/ghi ổ đĩa. Khi bật đo tốc độ chép file, ứng dụng hiển thị thêm lưu lượng giao diện mạng dùng cho ổ NAS. |
 | Tiện ích | Cắt và dán tệp trong Finder, ngăn kéo biểu tượng thanh menu, chống ngủ màn hình, dọn rác, gỡ ứng dụng và tìm tệp lớn. |
+| Âm thanh | Bật mixer để chỉnh 0–200% hoặc tắt tiếng từng ứng dụng đang phát, dùng CoreAudio Process Tap trên macOS 14.2+. |
 
 Giao diện có tiếng Việt và tiếng Anh. Bạn có thể bật, tắt các tính năng và đổi những phím tắt được hỗ trợ trong ứng dụng.
 
@@ -42,6 +43,7 @@ Các phím dưới đây là **mặc định**. Nếu đã thay đổi trong tab
 | Chuyển cửa sổ | `⌘Tab` hoặc `⌥Tab` |
 | Mở lịch sử clipboard | `⇧⌘C` |
 | Chụp màn hình | `⇧⌘1` hoặc `F4` |
+| Quét chữ từ màn hình | `⇧⌘2` hoặc nút OCR (`⌘O`) trong trình chụp ảnh |
 | Chia cửa sổ sang trái / phải | `⌃⌥←` / `⌃⌥→` |
 | Chia cửa sổ lên trên / xuống dưới | `⌃⌥↑` / `⌃⌥↓` |
 | Chia bốn góc | `⌃⌥U` / `⌃⌥I` / `⌃⌥J` / `⌃⌥K` |
@@ -64,6 +66,7 @@ Thẻ **Cấp quyền phần mềm** trong tab **Màn hình** giải thích từ
 | **Ghi màn hình** | Ảnh xem trước cửa sổ và chụp màn hình. Nếu không cấp, trình chuyển cửa sổ vẫn có thể hiển thị biểu tượng ứng dụng. |
 | **Helper SMC** | Giới hạn sạc và điều khiển quạt. Chỉ cài khi dùng các tính năng này; macOS sẽ yêu cầu quyền quản trị. |
 | **Bluetooth** | Sleep Guard khi bật chế độ quản lý Bluetooth lúc máy ngủ. |
+| **Ghi âm thanh hệ thống** | Mixer theo từng ứng dụng. macOS chỉ hỏi khi bạn bật mixer và điều chỉnh âm lượng. |
 
 Một số tính năng phụ thuộc vào phần cứng: Mac không có quạt sẽ không hiện thẻ điều khiển quạt; chỉnh sáng DDC/CI cần màn hình và kết nối tương thích. Số liệu NAS là lưu lượng của giao diện mạng, nên có thể bao gồm hoạt động mạng khác.
 
@@ -79,10 +82,10 @@ swift build -c release
 
 ```bash
 ./scripts/setup-signing-identity.sh
-./build.sh
+./build.sh --universal
 ```
 
-`./build.sh` chỉ tạo gói ứng dụng; script không tự cài hoặc mở lại HyperMac. Không tạo identity mới nếu bạn đã có identity đang dùng, vì thay chứng chỉ có thể khiến macOS yêu cầu cấp lại quyền Trợ năng.
+`./build.sh --universal` tạo `build/HyperMac.app`, `.zip` và `.dmg` cho Apple Silicon và Intel. Script không tự cài hoặc mở lại HyperMac. Trong ứng dụng đang chạy, chọn **Cập nhật từ build local** để áp dụng bản mới. Bản build local này chỉ chứa các tính năng kỹ thuật, không có cơ chế dùng thử Pro hoặc thanh toán VietQR. Không tạo identity mới nếu bạn đã có identity đang dùng, vì thay chứng chỉ có thể khiến macOS yêu cầu cấp lại quyền Trợ năng.
 
 ## Câu hỏi thường gặp
 

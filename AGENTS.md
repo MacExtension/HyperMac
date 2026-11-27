@@ -260,16 +260,16 @@ khi đó quyền Accessibility sẽ mất sau update.
 **Nên set secret bằng CLI để tránh dán sai** (đã từng dán cả câu lệnh `pbcopy …`):
 
 ```bash
-gh secret set HYPERMAC_SIGNING_P12_BASE64 --repo mrgoose000000-gif/HyperMac \
+gh secret set HYPERMAC_SIGNING_P12_BASE64 --repo MacExtension/HyperMac \
   < ~/.hypermac-signing/ci-signing.p12.base64
-gh secret set HYPERMAC_SIGNING_P12_PASSWORD --repo mrgoose000000-gif/HyperMac \
+gh secret set HYPERMAC_SIGNING_P12_PASSWORD --repo MacExtension/HyperMac \
   --body "hm-test-pass-2026"
 ```
 
 Khi bước import fail, đọc lỗi bằng annotation công khai thay vì log:
 
 ```bash
-gh run view <run-id> --repo mrgoose000000-gif/HyperMac \
+gh run view <run-id> --repo MacExtension/HyperMac \
   --json jobs -q '.jobs[0].check_run_url' \
   | xargs -I{} gh api {}/annotations --jq '.[] | "\(.title): \(.message)"'
 ```
@@ -303,7 +303,7 @@ gh run view <run-id> --repo mrgoose000000-gif/HyperMac \
 Private key trong secret = ai phát hành được app. Kiểm tra định kỳ bằng `gh`:
 
 ```bash
-R=mrgoose000000-gif/HyperMac
+R=MacExtension/HyperMac
 gh api repos/$R --jq '.permissions'                       # quyền của token hiện tại
 gh api "repos/$R/collaborators?affiliation=direct" --jq '.[] | "\(.login) \(.role_name)"'
 gh api "repos/$R/collaborators?affiliation=outside" --jq '.[] | .login'
