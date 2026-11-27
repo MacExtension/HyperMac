@@ -13,15 +13,21 @@ let package = Package(
             path: "Sources/VirtualDisplayBridge",
             publicHeadersPath: "include"
         ),
+        .target(
+            name: "AudioMixerBridge",
+            path: "Sources/AudioMixerBridge",
+            publicHeadersPath: "include"
+        ),
         .executableTarget(
             name: "HyperMac",
-            dependencies: ["VirtualDisplayBridge"],
+            dependencies: ["VirtualDisplayBridge", "AudioMixerBridge"],
             path: "Sources",
-            exclude: ["VirtualDisplayBridge"],
+            exclude: ["VirtualDisplayBridge", "AudioMixerBridge"],
             linkerSettings: [
                 .linkedFramework("IOKit"),
+                .linkedFramework("CoreAudio"),
             ]
         ),
-        .testTarget(name: "ScreenshotAnnotationTests", dependencies: ["HyperMac"], path: "Tests/ScreenshotAnnotationTests")
+        .testTarget(name: "ScreenshotAnnotationTests", dependencies: ["HyperMac", "AudioMixerBridge"], path: "Tests/ScreenshotAnnotationTests")
     ]
 )

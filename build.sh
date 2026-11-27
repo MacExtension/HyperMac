@@ -58,7 +58,7 @@ if [ "$BUILD_UNIVERSAL" = "true" ]; then
     rm -f .build/bin_arm64/HyperMac .build/bin_x86_64/HyperMac
     rm -f .build/out/Products/Release/HyperMac .build/release/HyperMac
     echo "  -> Compiling arm64 (Apple Silicon)..."
-    if ! swift build -c release --triple arm64-apple-macosx; then
+    if ! swift build -c release --disable-sandbox -debug-info-format none --triple arm64-apple-macosx; then
         echo "❌ Không biên dịch được binary arm64."
         exit 1
     fi
@@ -77,7 +77,7 @@ if [ "$BUILD_UNIVERSAL" = "true" ]; then
 
     echo "  -> Compiling x86_64 (Intel)..."
     rm -f .build/out/Products/Release/HyperMac .build/release/HyperMac
-    if ! swift build -c release --triple x86_64-apple-macosx; then
+    if ! swift build -c release --disable-sandbox -debug-info-format none --triple x86_64-apple-macosx; then
         echo "❌ Không biên dịch được binary x86_64."
         exit 1
     fi
@@ -97,13 +97,13 @@ if [ "$BUILD_UNIVERSAL" = "true" ]; then
     BINARY=".build/release/HyperMac"
     echo "  -> Merging with lipo (Universal 2)..."
     lipo -create .build/bin_arm64/HyperMac .build/bin_x86_64/HyperMac -output "$BINARY"
-    if ! lipo "$BINARY" -verify_arch arm64 x86_64; then
+    if ! lipo "$BINARY" -verify_arch arm64 || ! lipo "$BINARY" -verify_arch x86_64; then
         echo "❌ Binary Universal 2 không đủ hai kiến trúc: $(lipo -archs "$BINARY" 2>&1)"
         exit 1
     fi
 else
     echo "⚡ Building HyperMac (Tốc độ cao - Chip M: M1/M2/M3/M4)..."
-    swift build -c release
+    swift build -c release --disable-sandbox -debug-info-format none
     BINARY=".build/release/HyperMac"
 fi
 
@@ -177,6 +177,8 @@ cat > "${CONTENTS}/Info.plist" << 'PLIST'
     <string>HyperMac cần quyền ghi màn hình để hiển thị ảnh xem trước các cửa sổ trong trình chuyển đổi Alt+Tab.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>HyperMac sử dụng AppleEvents để điều khiển các ứng dụng và màn hình.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>HyperMac cần quyền ghi âm thanh hệ thống để chỉnh âm lượng riêng từng ứng dụng.</string>
 </dict>
 </plist>
 PLIST
