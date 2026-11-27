@@ -5,6 +5,7 @@ import AppKit
 
 public struct AltTabOverlayView: View {
     @ObservedObject var windowManager: WindowManager
+    @State private var firstVisibleRow = 0
 
     public init(windowManager: WindowManager) {
         self.windowManager = windowManager
@@ -170,10 +171,21 @@ public struct AltTabOverlayView: View {
                 .padding(.vertical, 4)
             }
             .onChange(of: windowManager.selectedIndex) {
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(windowManager.selectedIndex, anchor: .center)
+                let selectedRow = windowManager.selectedIndex / colCount
+                let visibleRows = max(1, layout.visibleRows)
+                if selectedRow >= firstVisibleRow + visibleRows {
+                    firstVisibleRow = selectedRow - visibleRows + 1
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(windowManager.selectedIndex, anchor: .bottom)
+                    }
+                } else if selectedRow < firstVisibleRow {
+                    firstVisibleRow = selectedRow
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(windowManager.selectedIndex, anchor: .top)
+                    }
                 }
             }
+            .onChange(of: windowManager.isVisible) { if !windowManager.isVisible { firstVisibleRow = 0 } }
         }
     }
 
