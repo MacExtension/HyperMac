@@ -104,11 +104,11 @@ public final class SystemMonitorManager: ObservableObject {
         if showCPURAMMenuBar {
             let cpu = Int(cpuUsagePercent.rounded())
             let ram = Int(ramUsagePercent.rounded())
-            parts.append("CPU \(cpu)% · RAM \(ram)%")
+            parts.append(String(format: "CPU %3d%% · RAM %3d%%", cpu, ram))
         }
         if showGPUMenuBar && hasGPU {
             let gpu = Int(gpuUsagePercent.rounded())
-            parts.append("GPU \(gpu)%")
+            parts.append(String(format: "GPU %3d%%", gpu))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
