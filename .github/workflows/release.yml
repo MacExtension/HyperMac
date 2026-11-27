@@ -255,7 +255,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
-          name: HyperMac ${{ steps.vars.outputs.tag }}
+          name: HyperMac
           target_commitish: ${{ github.sha }}
           body_path: release_notes.md
           files: |

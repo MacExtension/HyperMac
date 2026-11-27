@@ -1,15 +1,15 @@
 # HyperMac
 
-**HyperMac** là ứng dụng trên thanh menu dành cho macOS. Ứng dụng gom các thao tác với cửa sổ, clipboard, màn hình và phần cứng vào một giao diện viết bằng Swift, AppKit và SwiftUI. Bản phát hành v2.0.0 được đóng gói Universal 2 cho cả Apple Silicon và Intel.
+**HyperMac** là ứng dụng trên thanh menu dành cho macOS. Ứng dụng gom các thao tác với cửa sổ, clipboard, màn hình và phần cứng vào một giao diện viết bằng Swift, AppKit và SwiftUI. Bản phát hành mới nhất được đóng gói Universal 2 cho cả Apple Silicon và Intel.
 
-[![Phiên bản 2.0.0](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/MacExtension/HyperMac/releases/tag/v2.0.0)
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black)](https://github.com/MacExtension/HyperMac/releases/tag/v2.0.0)
-[![Universal 2](https://img.shields.io/badge/chip-Apple%20Silicon%20%2B%20Intel-brightgreen)](https://github.com/MacExtension/HyperMac/releases/tag/v2.0.0)
+[![Latest](https://img.shields.io/badge/release-Latest-brightgreen)](https://github.com/MacExtension/HyperMac/releases/latest)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black)](https://github.com/MacExtension/HyperMac/releases/latest)
+[![Universal 2](https://img.shields.io/badge/chip-Apple%20Silicon%20%2B%20Intel-brightgreen)](https://github.com/MacExtension/HyperMac/releases/latest)
 [![GPLv3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
 
 ## Tải về và cài đặt
 
-[**Tải HyperMac.dmg (v2.0.0)**](https://github.com/MacExtension/HyperMac/releases/download/v2.0.0/HyperMac.dmg) · [Tải bản ZIP](https://github.com/MacExtension/HyperMac/releases/download/v2.0.0/HyperMac.zip) · [Xem ghi chú phát hành](https://github.com/MacExtension/HyperMac/releases/tag/v2.0.0)
+[**Tải HyperMac.dmg (Latest)**](https://github.com/MacExtension/HyperMac/releases/latest/download/HyperMac.dmg) · [Tải bản ZIP](https://github.com/MacExtension/HyperMac/releases/latest/download/HyperMac.zip) · [Xem ghi chú phát hành](https://github.com/MacExtension/HyperMac/releases/latest)
 
 1. Tải `HyperMac.dmg`, mở tệp rồi kéo **HyperMac** vào thư mục **Applications**. Nếu chọn bản ZIP, giải nén `HyperMac.zip` rồi kéo `HyperMac.app` vào **Applications**.
 2. Nếu đã cài bản cũ, thoát HyperMac trước khi thay ứng dụng trong **Applications**.
@@ -17,7 +17,7 @@
 4. Nếu macOS chặn ứng dụng vì chưa xác minh nhà phát triển, mở **Cài đặt hệ thống → Quyền riêng tư & Bảo mật** rồi chọn **Vẫn mở** cho HyperMac.
 5. Mở bảng điều khiển từ thanh menu, vào thẻ **Cấp quyền phần mềm** để cấp những quyền cần cho tính năng bạn sử dụng.
 
-> Theo [ghi chú phát hành](https://github.com/MacExtension/HyperMac/releases/tag/v2.0.0), bản v2.0.0 có 7 ngày dùng thử tính năng Pro; hãy xem trang đó để biết điều kiện gia hạn và các thay đổi. Bản phát hành được ký bằng chứng chỉ tự ký, nên macOS có thể yêu cầu bước **Vẫn mở** ở trên.
+> Theo [ghi chú phát hành](https://github.com/MacExtension/HyperMac/releases/latest), bản phát hành mới nhất có 7 ngày dùng thử tính năng Pro; hãy xem trang đó để biết điều kiện gia hạn và các thay đổi. Bản phát hành được ký bằng chứng chỉ tự ký, nên macOS có thể yêu cầu bước **Vẫn mở** ở trên.
 
 ## HyperMac có gì?
 
@@ -90,7 +90,7 @@ swift build -c release
 
 **Phím tắt không hoạt động?** Kiểm tra quyền **Trợ năng** trong Cài đặt hệ thống, sau đó xem tính năng đã được bật và tổ hợp phím có trùng với ứng dụng khác hay không.
 
-**Máy Mac Intel có dùng được không?** Có. Bản phát hành v2.0.0 là Universal 2 cho Apple Silicon và Intel. Tính năng chỉnh âm lượng riêng từng ứng dụng yêu cầu macOS 14.2 trở lên.
+**Máy Mac Intel có dùng được không?** Có. Bản phát hành mới nhất là Universal 2 cho Apple Silicon và Intel. Tính năng chỉnh âm lượng riêng từng ứng dụng yêu cầu macOS 14.2 trở lên.
 
 **Cập nhật ứng dụng thế nào?** Tải bản mới từ [GitHub Releases](https://github.com/MacExtension/HyperMac/releases), thoát HyperMac, thay ứng dụng trong `/Applications` rồi mở lại. Cài đặt của bạn được macOS lưu riêng với tệp ứng dụng.
 
