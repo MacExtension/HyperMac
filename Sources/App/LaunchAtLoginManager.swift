@@ -7,6 +7,7 @@ public class LaunchAtLoginManager: ObservableObject {
     public static let shared = LaunchAtLoginManager()
 
     @Published public var isEnabled: Bool = false
+    private var statusGeneration = 0
 
     private init() {
         // Read cached preference first for instant UI response
@@ -18,6 +19,8 @@ public class LaunchAtLoginManager: ObservableObject {
     }
 
     public func setEnabled(_ enabled: Bool) {
+        statusGeneration += 1
+        let generation = statusGeneration
         self.isEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "launch_at_login_enabled")
 
@@ -31,20 +34,23 @@ public class LaunchAtLoginManager: ObservableObject {
             }
 
             // Verify final status
-            let actualStatus = Self.isSystemLaunchAtLoginActive(appPath: appPath)
+            let actualStatus = Self.isSystemLaunchAtLoginActive()
             DispatchQueue.main.async {
-                self?.isEnabled = actualStatus
+                guard let self, self.statusGeneration == generation, let actualStatus else { return }
+                self.isEnabled = actualStatus
                 UserDefaults.standard.set(actualStatus, forKey: "launch_at_login_enabled")
             }
         }
     }
 
     public func checkSystemStatus() {
-        let appPath = Self.currentAppPath
+        statusGeneration += 1
+        let generation = statusGeneration
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let active = Self.isSystemLaunchAtLoginActive(appPath: appPath)
+            let active = Self.isSystemLaunchAtLoginActive()
             DispatchQueue.main.async {
-                self?.isEnabled = active
+                guard let self, self.statusGeneration == generation, let active else { return }
+                self.isEnabled = active
                 UserDefaults.standard.set(active, forKey: "launch_at_login_enabled")
             }
         }
@@ -101,7 +107,7 @@ public class LaunchAtLoginManager: ObservableObject {
         runAppleScript(script)
     }
 
-    nonisolated private static func isSystemLaunchAtLoginActive(appPath: String) -> Bool {
+    nonisolated private static func isSystemLaunchAtLoginActive() -> Bool? {
         if #available(macOS 13.0, *) {
             if SMAppService.mainApp.status == .enabled {
                 return true
@@ -113,8 +119,10 @@ public class LaunchAtLoginManager: ObservableObject {
             return exists (first login item whose name is "HyperMac")
         end tell
         """
-        let result = runAppleScript(script)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return result == "true"
+        guard let result = runAppleScript(script)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        if result == "true" { return true }
+        if result == "false" { return false }
+        return nil
     }
 
     @discardableResult

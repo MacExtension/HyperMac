@@ -54,7 +54,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "command.circle.fill", accessibilityDescription: "HyperMac")
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            button.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -83,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         _ = SystemMonitorManager.shared
         _ = ScreenshotManager.shared
         _ = MenuBarHiderManager.shared
+        _ = AudioMixerManager.shared
 
         // Register for display reconfiguration
         CGDisplayRegisterReconfigurationCallback(displayReconfigCallback, nil)
@@ -100,6 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AudioMixerManager.shared.stopForTermination()
         MenuBarHiderManager.shared.removeStatusItem()
         VirtualDisplayManager.shared.destroyVirtualDisplay()
         FanManager.shared.restoreSystemSync()
@@ -225,6 +227,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     // Điều phối toàn bộ manager nhạy năng lượng theo vòng đời mở/đóng popover.
     func popoverDidShow(_ notification: Notification) {
+        AudioMixerManager.shared.setPopoverVisible(true)
         DiskSpeedManager.shared.setPopoverVisible(true)
         BatteryManager.shared.setPopoverVisible(true)
         PermissionsManager.shared.setPopoverVisible(true)
@@ -234,6 +237,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        AudioMixerManager.shared.setPopoverVisible(false)
         DiskSpeedManager.shared.setPopoverVisible(false)
         BatteryManager.shared.setPopoverVisible(false)
         PermissionsManager.shared.setPopoverVisible(false)
