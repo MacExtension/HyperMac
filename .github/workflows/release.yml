@@ -172,6 +172,7 @@ jobs:
         env:
           CI: true
           HYPERMAC_RELEASE_TAG: ${{ steps.vars.outputs.tag }}
+          HYPERMAC_BUILD_COMMIT: ${{ github.sha }}
           HYPERMAC_SIGN_IDENTITY: HyperMac Self-Signed
           HYPERMAC_SIGN_KEYCHAIN: ${{ runner.temp }}/hypermac-signing.keychain-db
 
@@ -218,6 +219,33 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare Update Feed
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import plistlib
+          from pathlib import Path
+
+          info = plistlib.loads(Path('build/HyperMac.app/Contents/Info.plist').read_bytes())
+          commit = os.environ['GITHUB_SHA'].lower()
+          if info.get('HyperMacBuildCommit') != commit:
+              raise SystemExit('App bundle commit does not match the workflow commit')
+          archive = Path('build/HyperMac.zip')
+          feed = {
+              'schema': 1,
+              'commit': commit,
+              'version': info['CFBundleShortVersionString'],
+              'notes': Path('release_notes.md').read_text(encoding='utf-8'),
+              'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+          }
+          Path('build/update.json').write_text(
+              json.dumps(feed, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+          )
+          print('Prepared update.json for commit', commit)
+          PY
+
       - name: Create GitHub Release and Upload Asset
         uses: softprops/action-gh-release@v3
         with:
@@ -228,6 +256,7 @@ jobs:
           files: |
             build/HyperMac.dmg
             build/HyperMac.zip
+            build/update.json
           fail_on_unmatched_files: true
           overwrite_files: true
           draft: false

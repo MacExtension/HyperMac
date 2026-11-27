@@ -95,7 +95,7 @@ swift build -c release
 
 **Máy Mac Intel có dùng được không?** Có. Bản phát hành mới nhất là Universal 2 cho Apple Silicon và Intel. Tính năng chỉnh âm lượng riêng từng ứng dụng yêu cầu macOS 14.2 trở lên.
 
-**Cập nhật ứng dụng thế nào?** Tải bản mới từ [GitHub Releases](https://github.com/MacExtension/HyperMac/releases), thoát HyperMac, thay ứng dụng trong `/Applications` rồi mở lại. Cài đặt của bạn được macOS lưu riêng với tệp ứng dụng.
+**Cập nhật ứng dụng thế nào?** Bản phát hành tự kiểm tra GitHub Releases định kỳ mà không dùng GitHub REST API. Khi có bản mới, bấm **Tải và cài bản Latest** trong HyperMac. Nếu đang dùng bản cũ và gặp lỗi giới hạn lượt kiểm tra, tải bản mới từ [GitHub Releases](https://github.com/MacExtension/HyperMac/releases/latest) và thay ứng dụng trong `/Applications` một lần. Cài đặt được macOS lưu riêng với tệp ứng dụng.
 
 ## Phiên bản, đóng góp và giấy phép
 

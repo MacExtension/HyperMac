@@ -33,7 +33,9 @@ struct UpdateModalView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             Text(tr("Cập nhật HyperMac", "Update HyperMac"))
                                 .font(.system(size: FS.body, weight: .semibold))
-                            Text(tr("Phiên bản hiện tại: v\(UpdateManager.currentVersion)", "Current version: v\(UpdateManager.currentVersion)"))
+                            Text(updateManager.usesLocalBuild
+                                 ? tr("Nguồn cập nhật: build local", "Update source: local build")
+                                 : tr("Nguồn cập nhật: GitHub Releases", "Update source: GitHub Releases"))
                                 .font(.system(size: FS.caption))
                                 .foregroundStyle(.secondary)
                         }
@@ -59,7 +61,9 @@ struct UpdateModalView: View {
                     VStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.regular)
-                        Text(tr("Đang kiểm tra bản build local...", "Checking the local build..."))
+                        Text(updateManager.usesLocalBuild
+                             ? tr("Đang kiểm tra bản build local...", "Checking the local build...")
+                             : tr("Đang kiểm tra GitHub Releases...", "Checking GitHub Releases..."))
                             .font(.system(size: FS.label))
                             .foregroundStyle(.secondary)
                     }
@@ -71,10 +75,14 @@ struct UpdateModalView: View {
                             .font(.system(size: FS.huge))
                             .foregroundStyle(.secondary)
 
-                        Text(tr("Bạn đang dùng bản build mới nhất!", "You are using the latest local build!"))
+                        Text(updateManager.usesLocalBuild
+                             ? tr("Bạn đang dùng bản build mới nhất!", "You are using the latest local build!")
+                             : tr("Bạn đang dùng bản Latest!", "You are using the Latest release!"))
                             .font(.system(size: FS.body, weight: .semibold))
 
-                        Text(tr("HyperMac v\(ver) đang trùng với bản trong thư mục build.", "HyperMac v\(ver) matches the app in the build folder."))
+                        Text(updateManager.usesLocalBuild
+                             ? tr("HyperMac v\(ver) đang trùng với bản trong thư mục build.", "HyperMac v\(ver) matches the app in the build folder.")
+                             : tr("Ứng dụng đang trùng với GitHub Release mới nhất.", "The app matches the latest GitHub Release."))
                             .font(.system(size: FS.caption))
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -102,14 +110,18 @@ struct UpdateModalView: View {
                                 .font(.system(size: FS.subhead))
                                 .foregroundStyle(.secondary)
 
-                            Text(tr("Có bản build local mới: \(displayVer)", "A new local build is available: \(displayVer)"))
+                            Text(updateManager.usesLocalBuild
+                                 ? tr("Có bản build local mới: \(displayVer)", "A new local build is available: \(displayVer)")
+                                 : tr("Có bản phát hành Latest mới", "A new Latest release is available"))
                                 .font(.system(size: FS.body, weight: .semibold))
                                 .foregroundStyle(Color.accentColor)
                         }
 
                         // Release Notes Box
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(tr("Bản build local:", "Local build details:"))
+                            Text(updateManager.usesLocalBuild
+                                 ? tr("Bản build local:", "Local build details:")
+                                 : tr("Ghi chú phát hành:", "Release notes:"))
                                 .font(.system(size: FS.caption, weight: .semibold))
                                 .foregroundStyle(.secondary)
 
@@ -135,7 +147,9 @@ struct UpdateModalView: View {
                                 HStack(spacing: 5) {
                                     Image(systemName: "arrow.down.circle.fill")
                                         .font(.system(size: FS.body, weight: .semibold))
-                                    Text(tr("Cập nhật từ build local", "Update from local build"))
+                                    Text(updateManager.usesLocalBuild
+                                         ? tr("Cập nhật từ build local", "Update from local build")
+                                         : tr("Tải và cài bản Latest", "Download and install Latest"))
                                         .font(.system(size: FS.label, weight: .semibold))
                                 }
                                 .frame(maxWidth: .infinity)
@@ -149,9 +163,15 @@ struct UpdateModalView: View {
                             .buttonStyle(.plain)
 
                             Button {
-                                updateManager.openBuildFolder()
+                                if updateManager.usesLocalBuild {
+                                    updateManager.openBuildFolder()
+                                } else {
+                                    updateManager.openReleasePage()
+                                }
                             } label: {
-                                Text(tr("Mở thư mục build", "Open build folder"))
+                                Text(updateManager.usesLocalBuild
+                                     ? tr("Mở thư mục build", "Open build folder")
+                                     : tr("Mở GitHub Releases", "Open GitHub Releases"))
                                     .font(.system(size: FS.caption))
                                     .foregroundStyle(.secondary)
                             }
@@ -160,15 +180,26 @@ struct UpdateModalView: View {
                     }
                     .frame(maxWidth: .infinity)
 
+                case .downloading:
+                    VStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.regular)
+                        Text(tr("Đang tải và xác minh bản phát hành...", "Downloading and verifying the release..."))
+                            .font(.system(size: FS.body, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 120)
+
                 case .extracting, .readyToRestart:
                     VStack(spacing: 10) {
                         ProgressView()
                             .controlSize(.regular)
 
-                        Text(tr("Đang cài build local và chuẩn bị mở lại...", "Installing the local build and preparing to reopen..."))
+                        Text(updateManager.usesLocalBuild
+                             ? tr("Đang cài build local và chuẩn bị mở lại...", "Installing the local build and preparing to reopen...")
+                             : tr("Đang cài bản Latest và chuẩn bị mở lại...", "Installing Latest and preparing to reopen..."))
                             .font(.system(size: FS.body, weight: .semibold))
 
-                        Text(tr("Ứng dụng sẽ mở lại từ bản build local.", "The app will reopen from the local build."))
+                        Text(tr("Ứng dụng sẽ mở lại sau khi cập nhật.", "The app will reopen after the update."))
                             .font(.system(size: FS.caption))
                             .foregroundStyle(.secondary)
                     }
@@ -180,7 +211,9 @@ struct UpdateModalView: View {
                             .font(.system(size: FS.hero))
                             .foregroundStyle(.orange)
 
-                        Text(tr("Không thể cập nhật từ build local", "Could not update from the local build"))
+                        Text(updateManager.usesLocalBuild
+                             ? tr("Không thể cập nhật từ build local", "Could not update from the local build")
+                             : tr("Không thể cập nhật từ GitHub", "Could not update from GitHub"))
                             .font(.system(size: FS.body, weight: .semibold))
 
                         Text(errorMsg)
@@ -202,9 +235,15 @@ struct UpdateModalView: View {
                             .buttonStyle(.plain)
 
                             Button {
-                                updateManager.openBuildFolder()
+                                if updateManager.usesLocalBuild {
+                                    updateManager.openBuildFolder()
+                                } else {
+                                    updateManager.openReleasePage()
+                                }
                             } label: {
-                                Text(tr("Mở thư mục build", "Open build folder"))
+                                Text(updateManager.usesLocalBuild
+                                     ? tr("Mở thư mục build", "Open build folder")
+                                     : tr("Mở GitHub Releases", "Open GitHub Releases"))
                                     .font(.system(size: FS.caption, weight: .medium))
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 4)
@@ -221,7 +260,9 @@ struct UpdateModalView: View {
 
                 // Preferences Row: Auto check on launch
                 HStack {
-                    Text(tr("Tự động kiểm tra build local khi mở HyperMac", "Automatically check the local build on startup"))
+                    Text(updateManager.usesLocalBuild
+                         ? tr("Tự động kiểm tra build local khi mở HyperMac", "Automatically check the local build on startup")
+                         : tr("Tự động kiểm tra GitHub định kỳ", "Automatically check GitHub periodically"))
                         .font(.system(size: FS.caption))
                         .foregroundStyle(.secondary)
 

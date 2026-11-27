@@ -10,12 +10,13 @@ public enum UpdateState: Equatable {
     case checking
     case upToDate(version: String)
     case updateAvailable(version: String, notes: String)
+    case downloading
     case extracting
     case readyToRestart
     case failed(String)
 }
 
-// MARK: - Local Build Update Manager
+// MARK: - Update Manager
 
 @MainActor
 public class UpdateManager: NSObject, ObservableObject {
@@ -24,6 +25,14 @@ public class UpdateManager: NSObject, ObservableObject {
 
     nonisolated private static let localBuildPathInfoKey = "HyperMacLocalBuildPath"
     nonisolated private static let bundleIdentifier = "com.opensource.hypermac"
+    nonisolated private static let releaseFeedKey = "update_release_feed"
+    nonisolated private static let releaseLastCheckKey = "update_release_last_check"
+    nonisolated private static let releaseNextRetryKey = "update_release_next_retry"
+    nonisolated private static let automaticCheckInterval: TimeInterval = 6 * 60 * 60
+
+    public var usesLocalBuild: Bool {
+        Bundle.main.object(forInfoDictionaryKey: Self.localBuildPathInfoKey) is String
+    }
 
     @Published public var state: UpdateState = .idle
     @Published public var showUpdateModal: Bool = false
@@ -33,11 +42,15 @@ public class UpdateManager: NSObject, ObservableObject {
     @Published public var autoCheckEnabled: Bool = true {
         didSet {
             UserDefaults.standard.set(autoCheckEnabled, forKey: "hypermac_auto_check_updates")
+            configureAutomaticChecks()
         }
     }
 
     private var localBuildURL: URL?
     private var runningExecutableFingerprint: String?
+    private var releaseFeed: GitHubUpdateFeed?
+    private var automaticCheckTimer: Timer?
+    private var automaticCheckGeneration = 0
 
     private enum LocalBuildError: Error, Sendable {
         case notFound
@@ -53,7 +66,7 @@ public class UpdateManager: NSObject, ObservableObject {
         let hasUpdate: Bool
     }
 
-    private struct StagedLocalBuild: Sendable {
+    private struct StagedAppBuild: Sendable {
         let appURL: URL
         let stagingDirectoryURL: URL
     }
@@ -70,10 +83,24 @@ public class UpdateManager: NSObject, ObservableObject {
             self.autoCheckEnabled = true
         }
 
-        // Chỉ kiểm tra bundle local; không gọi GitHub hay tải file qua mạng.
-        if autoCheckEnabled {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                self?.checkForUpdates(silent: true)
+        configureAutomaticChecks()
+    }
+
+    private func configureAutomaticChecks() {
+        automaticCheckGeneration += 1
+        let generation = automaticCheckGeneration
+        automaticCheckTimer?.invalidate()
+        automaticCheckTimer = nil
+        guard autoCheckEnabled else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard let self, self.autoCheckEnabled,
+                  self.automaticCheckGeneration == generation else { return }
+            self.checkForUpdates(silent: true)
+        }
+        automaticCheckTimer = Timer.scheduledTimer(withTimeInterval: Self.automaticCheckInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.autoCheckEnabled else { return }
+                self.checkForUpdates(silent: true)
             }
         }
     }
@@ -97,10 +124,23 @@ public class UpdateManager: NSObject, ObservableObject {
         return false
     }
 
+    public func checkForUpdates(silent: Bool = false) {
+        if !silent { showUpdateModal = true }
+        if case .checking = state { return }
+        if case .downloading = state { return }
+        if case .extracting = state { return }
+        if case .readyToRestart = state { return }
+        if usesLocalBuild {
+            checkLocalBuild(silent: silent)
+        } else {
+            checkGitHubRelease(silent: silent)
+        }
+    }
+
     // MARK: - Check Local Build
 
     /// So sánh app đang chạy với `build/HyperMac.app` của source local.
-    public func checkForUpdates(silent: Bool = false) {
+    private func checkLocalBuild(silent: Bool) {
         if !silent {
             self.showUpdateModal = true
         }
@@ -148,6 +188,95 @@ public class UpdateManager: NSObject, ObservableObject {
                 appLog("⚠️ UpdateManager: Local build check failed: \(error)")
             }
         }
+    }
+
+    // MARK: - Check GitHub Release
+
+    /// Release builds read the small `update.json` asset; no GitHub REST API call.
+    private func checkGitHubRelease(silent: Bool) {
+        if !silent { showUpdateModal = true }
+        let defaults = UserDefaults.standard
+        let now = Date().timeIntervalSince1970
+        let retryAt = defaults.double(forKey: Self.releaseNextRetryKey)
+        if retryAt > now {
+            state = silent ? .idle : .failed(releaseRateLimitMessage)
+            return
+        }
+
+        if silent,
+           now - defaults.double(forKey: Self.releaseLastCheckKey) < Self.automaticCheckInterval {
+            if let cached = defaults.data(forKey: Self.releaseFeedKey),
+               let feed = try? JSONDecoder().decode(GitHubUpdateFeed.self, from: cached),
+               feed.isValid {
+                applyReleaseFeed(feed)
+            } else {
+                state = .idle
+            }
+            return
+        }
+
+        state = .checking
+        defaults.set(now, forKey: Self.releaseLastCheckKey)
+        Task { [weak self] in
+            do {
+                let feed = try await GitHubReleaseClient.fetchFeed()
+                guard let self else { return }
+                self.applyReleaseFeed(feed)
+                if let encoded = try? JSONEncoder().encode(feed) {
+                    defaults.set(encoded, forKey: Self.releaseFeedKey)
+                }
+                defaults.removeObject(forKey: Self.releaseNextRetryKey)
+            } catch {
+                guard let self else { return }
+                if let releaseError = error as? GitHubReleaseError,
+                   case .httpStatus(let status, let retryAfter) = releaseError,
+                   status == 403 || status == 429 {
+                    defaults.set(Date().timeIntervalSince1970 + max(60, retryAfter ?? 3600),
+                                 forKey: Self.releaseNextRetryKey)
+                }
+                self.state = silent ? .idle : .failed(self.releaseErrorMessage(error))
+                appLog("⚠️ UpdateManager: GitHub release feed failed: \(error)")
+            }
+        }
+    }
+
+    private func applyReleaseFeed(_ feed: GitHubUpdateFeed) {
+        releaseFeed = feed
+        latestVersionString = feed.version
+        releaseNotes = feed.notes
+        let installedCommit = Bundle.main.object(forInfoDictionaryKey: "HyperMacBuildCommit") as? String
+        let installedVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? Self.currentVersion
+        let hasUpdate = !Self.isVersion(installedVersion, greaterThan: feed.version)
+            && feed.differs(from: installedCommit)
+        hasNewUpdate = hasUpdate
+        state = hasUpdate
+            ? .updateAvailable(version: "Latest", notes: feed.notes)
+            : .upToDate(version: "Latest")
+        appLog("✅ UpdateManager: GitHub release feed checked (commit: \(feed.commit), update: \(hasUpdate))")
+    }
+
+    private var releaseRateLimitMessage: String {
+        tr("GitHub tạm giới hạn lượt kiểm tra. Bạn có thể mở Releases để tải thủ công.",
+           "GitHub is temporarily limiting checks. You can open Releases to download manually.")
+    }
+
+    private func releaseErrorMessage(_ error: Error) -> String {
+        if let releaseError = error as? GitHubReleaseError {
+            switch releaseError {
+            case .httpStatus(403, _), .httpStatus(429, _):
+                return releaseRateLimitMessage
+            case .httpStatus(404, _):
+                return tr("Release chưa có dữ liệu cập nhật. Hãy mở GitHub Releases để tải thủ công.",
+                          "The release has no update feed yet. Open GitHub Releases to download manually.")
+            case .invalidFeed:
+                return tr("Dữ liệu cập nhật từ GitHub không hợp lệ. Chưa cài bản mới.",
+                          "GitHub's update feed is invalid. No update was installed.")
+            default:
+                break
+            }
+        }
+        return tr("Không thể kiểm tra GitHub. Kiểm tra kết nối hoặc mở Releases để tải thủ công.",
+                  "Could not check GitHub. Check your connection or open Releases to download manually.")
     }
 
     private nonisolated static func inspectLocalBuild(
@@ -286,6 +415,14 @@ public class UpdateManager: NSObject, ObservableObject {
     // MARK: - Install Local Build
 
     public func startUpdate() {
+        if usesLocalBuild {
+            startLocalUpdate()
+        } else {
+            startReleaseUpdate()
+        }
+    }
+
+    private func startLocalUpdate() {
         guard hasNewUpdate else { return }
         let targetURL = Bundle.main.bundleURL.standardizedFileURL
         self.state = .extracting
@@ -308,7 +445,7 @@ public class UpdateManager: NSObject, ObservableObject {
                         guard Self.isValidHyperMacBundle(at: stagedAppURL) else {
                             throw LocalBuildError.invalidBundle
                         }
-                        return StagedLocalBuild(appURL: stagedAppURL, stagingDirectoryURL: stagingDirectory)
+                        return StagedAppBuild(appURL: stagedAppURL, stagingDirectoryURL: stagingDirectory)
                     } catch {
                         try? FileManager.default.removeItem(at: stagingDirectory)
                         throw error
@@ -328,6 +465,62 @@ public class UpdateManager: NSObject, ObservableObject {
         }
     }
 
+    private func startReleaseUpdate() {
+        guard hasNewUpdate, let feed = releaseFeed else { return }
+        let targetURL = Bundle.main.bundleURL.standardizedFileURL
+        state = .downloading
+        Task { [weak self] in
+            do {
+                let staged = try await GitHubReleaseClient.downloadAndStage(
+                    feed: feed,
+                    installedAppURL: targetURL
+                )
+                guard let self else {
+                    try? FileManager.default.removeItem(at: staged.stagingDirectoryURL)
+                    return
+                }
+                self.state = .extracting
+                self.performInPlaceUpdate(
+                    stagedBuild: StagedAppBuild(
+                        appURL: staged.appURL,
+                        stagingDirectoryURL: staged.stagingDirectoryURL
+                    ),
+                    targetURL: targetURL
+                )
+            } catch {
+                guard let self else { return }
+                self.state = .failed(self.releaseInstallErrorMessage(error))
+                appLog("⚠️ UpdateManager: GitHub release download failed: \(error)")
+            }
+        }
+    }
+
+    private func releaseInstallErrorMessage(_ error: Error) -> String {
+        if let releaseError = error as? GitHubReleaseError {
+            switch releaseError {
+            case .digestMismatch:
+                return tr("Tệp tải về không khớp SHA-256. App hiện tại được giữ nguyên.",
+                          "The download does not match its SHA-256 digest. The current app was kept.")
+            case .invalidArchive, .invalidBundle, .commitMismatch:
+                return tr("Gói cập nhật không hợp lệ. App hiện tại được giữ nguyên.",
+                          "The update package is invalid. The current app was kept.")
+            case .signatureMismatch:
+                return tr("Chữ ký của bản tải về không khớp app đang dùng. Chưa cài bản mới.",
+                          "The downloaded app's signature does not match the installed app. No update was installed.")
+            case .httpStatus(403, _), .httpStatus(429, _):
+                return releaseRateLimitMessage
+            default:
+                break
+            }
+        }
+        return tr("Không thể tải bản cập nhật. App hiện tại được giữ nguyên; bạn có thể mở GitHub Releases.",
+                  "Could not download the update. The current app was kept; you can open GitHub Releases.")
+    }
+
+    public func openReleasePage() {
+        NSWorkspace.shared.open(GitHubReleaseClient.releasePageURL)
+    }
+
     public func openBuildFolder() {
         let folderURL: URL
         if let localBuildURL {
@@ -341,7 +534,7 @@ public class UpdateManager: NSObject, ObservableObject {
         NSWorkspace.shared.open(folderURL)
     }
 
-    private func performInPlaceUpdate(stagedBuild: StagedLocalBuild, targetURL: URL) {
+    private func performInPlaceUpdate(stagedBuild: StagedAppBuild, targetURL: URL) {
         let fileManager = FileManager.default
         let currentPID = ProcessInfo.processInfo.processIdentifier
         let parentURL = targetURL.deletingLastPathComponent()
@@ -383,7 +576,7 @@ public class UpdateManager: NSObject, ObservableObject {
                 /bin/mv "$APP" "$BAK" || fail_replace "could not back up current app"
             fi
             if /bin/mv "$NEW" "$APP"; then
-                echo "Local build installed."
+                echo "HyperMac update installed."
                 /bin/rm -rf "$BAK"
                 exit 0
             fi
@@ -432,7 +625,7 @@ public class UpdateManager: NSObject, ObservableObject {
             try updateProcess.run()
 
             self.state = .readyToRestart
-            appLog("✨ UpdateManager: Installing local build from \(stagedBuild.appURL.path) to \(targetURL.path)")
+            appLog("✨ UpdateManager: Installing validated app from \(stagedBuild.appURL.path) to \(targetURL.path)")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 NSApplication.shared.terminate(nil)
             }

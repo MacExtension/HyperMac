@@ -6,6 +6,11 @@ if [[ ! "${HYPERMAC_RELEASE_TAG}" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "❌ Invalid HYPERMAC_RELEASE_TAG: ${HYPERMAC_RELEASE_TAG}"
     exit 2
 fi
+HYPERMAC_BUILD_COMMIT="${HYPERMAC_BUILD_COMMIT:-$(git rev-parse --verify HEAD 2>/dev/null || true)}"
+if [ "${CI:-}" = "true" ] && [[ ! "${HYPERMAC_BUILD_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "❌ CI build requires a full Git commit SHA."
+    exit 2
+fi
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
@@ -184,6 +189,9 @@ cat > "${CONTENTS}/Info.plist" << 'PLIST'
 PLIST
 
 /usr/libexec/PlistBuddy -c "Add :HyperMacReleaseTag string ${HYPERMAC_RELEASE_TAG}" "${CONTENTS}/Info.plist"
+if [[ "${HYPERMAC_BUILD_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+    /usr/bin/plutil -insert HyperMacBuildCommit -string "$HYPERMAC_BUILD_COMMIT" "${CONTENTS}/Info.plist"
+fi
 
 # Local builds remember their source bundle so the in-app updater can compare
 # the running copy with build/HyperMac.app. CI artifacts stay portable.

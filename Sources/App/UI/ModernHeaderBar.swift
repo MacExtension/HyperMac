@@ -11,6 +11,17 @@ struct ModernHeaderBar: View {
     @ObservedObject var languageManager: LanguageManager = LanguageManager.shared
     var onSelectThermal: (() -> Void)? = nil
 
+    private var updateHelpText: String {
+        if updateManager.usesLocalBuild {
+            return updateManager.hasNewUpdate
+                ? tr("Có build local mới! Bấm để cập nhật", "A new local build is ready. Click to update")
+                : tr("Kiểm tra bản build local", "Check the local build")
+        }
+        return updateManager.hasNewUpdate
+            ? tr("Có bản Latest mới! Bấm để cập nhật", "A new Latest release is ready. Click to update")
+            : tr("Kiểm tra GitHub Releases", "Check GitHub Releases")
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             // Logo & Title
@@ -26,7 +37,7 @@ struct ModernHeaderBar: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(2)
 
-                // Latest badge (clickable to check for a local build)
+                // Latest badge (clickable to check the current update source)
                 Button {
                     updateManager.checkForUpdates(silent: false)
                 } label: {
@@ -53,7 +64,7 @@ struct ModernHeaderBar: View {
                     .foregroundStyle(updateManager.hasNewUpdate ? Tone.good : Color.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(updateManager.hasNewUpdate ? tr("Có build local mới! Bấm để cập nhật", "A new local build is ready. Click to update") : tr("Kiểm tra bản build local", "Check the local build"))
+                .help(updateHelpText)
 
                 // Language Switcher Badge (vi / en) — Directly to the right of Latest badge
                 Button {
