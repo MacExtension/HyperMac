@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+HYPERMAC_RELEASE_TAG="${HYPERMAC_RELEASE_TAG:-latest}"
+if [[ ! "${HYPERMAC_RELEASE_TAG}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "❌ Invalid HYPERMAC_RELEASE_TAG: ${HYPERMAC_RELEASE_TAG}"
+    exit 2
+fi
+
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║          HyperMac — Build Script         ║"
@@ -174,6 +180,8 @@ cat > "${CONTENTS}/Info.plist" << 'PLIST'
 </dict>
 </plist>
 PLIST
+
+/usr/libexec/PlistBuddy -c "Add :HyperMacReleaseTag string ${HYPERMAC_RELEASE_TAG}" "${CONTENTS}/Info.plist"
 
 # Local builds remember their source bundle so the in-app updater can compare
 # the running copy with build/HyperMac.app. CI artifacts stay portable.

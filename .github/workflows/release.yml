@@ -171,6 +171,7 @@ jobs:
         run: ./build.sh --no-run --universal
         env:
           CI: true
+          HYPERMAC_RELEASE_TAG: ${{ steps.vars.outputs.tag }}
           HYPERMAC_SIGN_IDENTITY: HyperMac Self-Signed
           HYPERMAC_SIGN_KEYCHAIN: ${{ runner.temp }}/hypermac-signing.keychain-db
 
