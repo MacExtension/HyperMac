@@ -30,6 +30,12 @@ public enum CaffeinateDuration: Int, CaseIterable, Identifiable {
 public class CaffeinateManager: ObservableObject {
     public static let shared = CaffeinateManager()
 
+    private enum Preferences {
+        static let duration = "caffeinate_selected_duration"
+        static let enabled = "caffeinate_enabled"
+        static let expiresAt = "caffeinate_expires_at"
+    }
+
     @Published public var isActive: Bool = false
     @Published public var selectedDuration: CaffeinateDuration = .indefinite
     @Published public var remainingSeconds: Int = 0
@@ -37,16 +43,34 @@ public class CaffeinateManager: ObservableObject {
 
     private var assertionID: IOPMAssertionID = 0
     private var countdownTimer: Timer?
+    private var expiresAt: Date?
 
     private init() {
-        // Register cleanup on app quit so assertion is never leaked
+        let defaults = UserDefaults.standard
+        selectedDuration = CaffeinateDuration(rawValue: defaults.integer(forKey: Preferences.duration)) ?? .indefinite
+
+        // The OS assertion belongs to this process. Release it on quit without
+        // clearing the user's choice, so a new process can restore it.
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.disable()
+                self?.stopForTermination()
+            }
+        }
+
+        guard defaults.bool(forKey: Preferences.enabled) else { return }
+        if selectedDuration == .indefinite {
+            enable(duration: .indefinite)
+        } else {
+            let timestamp = defaults.double(forKey: Preferences.expiresAt)
+            if timestamp > Date().timeIntervalSince1970 {
+                activate(duration: selectedDuration, expiresAt: Date(timeIntervalSince1970: timestamp))
+            } else {
+                defaults.set(false, forKey: Preferences.enabled)
+                defaults.removeObject(forKey: Preferences.expiresAt)
             }
         }
     }
@@ -60,7 +84,17 @@ public class CaffeinateManager: ObservableObject {
     }
 
     public func enable(duration: CaffeinateDuration = .indefinite) {
+        activate(duration: duration, expiresAt: duration == .indefinite ? nil : Date().addingTimeInterval(TimeInterval(duration.rawValue)))
+    }
+
+    private func activate(duration: CaffeinateDuration, expiresAt: Date?) {
         self.selectedDuration = duration
+        let defaults = UserDefaults.standard
+        defaults.set(duration.rawValue, forKey: Preferences.duration)
+        if let expiresAt, expiresAt <= Date() {
+            disable()
+            return
+        }
 
         if assertionID == 0 {
             let type = kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString
@@ -75,14 +109,24 @@ public class CaffeinateManager: ObservableObject {
                 appLog("☕️ CaffeinateManager: Native IOKit display assertion active (ID: \(assertionID))")
             } else {
                 appLog("⚠️ CaffeinateManager: Failed to create assertion (Error: \(result))")
+                disable()
+                return
             }
         }
 
         self.isActive = true
-        self.remainingSeconds = duration.rawValue
+        self.expiresAt = expiresAt
+        self.remainingSeconds = expiresAt.map { max(0, Int(ceil($0.timeIntervalSinceNow))) } ?? 0
         updateRemainingFormatted()
+        defaults.set(true, forKey: Preferences.enabled)
+        if let expiresAt {
+            defaults.set(expiresAt.timeIntervalSince1970, forKey: Preferences.expiresAt)
+        } else {
+            defaults.removeObject(forKey: Preferences.expiresAt)
+        }
 
         countdownTimer?.invalidate()
+        countdownTimer = nil
         if duration != .indefinite {
             countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -93,6 +137,12 @@ public class CaffeinateManager: ObservableObject {
     }
 
     public func disable() {
+        stopForTermination()
+        UserDefaults.standard.set(false, forKey: Preferences.enabled)
+        UserDefaults.standard.removeObject(forKey: Preferences.expiresAt)
+    }
+
+    private func stopForTermination() {
         countdownTimer?.invalidate()
         countdownTimer = nil
 
@@ -103,22 +153,25 @@ public class CaffeinateManager: ObservableObject {
         }
 
         self.isActive = false
+        self.expiresAt = nil
         self.remainingSeconds = 0
         self.remainingFormatted = ""
     }
 
     public func setDuration(_ duration: CaffeinateDuration) {
         self.selectedDuration = duration
+        UserDefaults.standard.set(duration.rawValue, forKey: Preferences.duration)
         if isActive {
             enable(duration: duration)
         }
     }
 
     private func tick() {
-        guard isActive, selectedDuration != .indefinite else { return }
+        guard isActive, let expiresAt else { return }
 
-        if remainingSeconds > 1 {
-            remainingSeconds -= 1
+        let remaining = max(0, Int(ceil(expiresAt.timeIntervalSinceNow)))
+        if remaining > 0 {
+            remainingSeconds = remaining
             updateRemainingFormatted()
         } else {
             disable()
