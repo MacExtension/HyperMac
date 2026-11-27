@@ -249,7 +249,8 @@ public class BatteryManager: ObservableObject {
         return max(0, diff)
     }
 
-    public var tempAlertThreshold: Double = 38.0 // Warning at 38°C
+    public var tempAlertThreshold: Double = 40.0
+    private var hasReachedChargeLimit = false
     private var lastTempAlertDate: Date? = nil
     private var lastExtDisplayAlertDate: Date? = nil
     private var lastLowBatteryAlertLevel: Int? = nil
@@ -264,6 +265,8 @@ public class BatteryManager: ObservableObject {
     private var lastAppliedInhibitState: Bool? = nil
     private var lastAppliedLimit: Int = 0
     private var lastSMCWriteDate: Date = .distantPast
+    private let powerCommandQueue = DispatchQueue(label: "com.opensource.hypermac.battery.power", qos: .utility)
+    private var smcCommandGeneration: UInt64 = 0
     private var consecutiveChargeSpikes: Int = 0
 
     private init() {
@@ -420,10 +423,11 @@ public class BatteryManager: ObservableObject {
                 _ = NativePowerUIClient.shared.setLimit(chargeLimit)
             }
             if isHelperInstalled {
+                smcCommandGeneration &+= 1
                 if currentLevel >= chargeLimit {
-                    _ = shell(PrivilegedHelper.sudo("charge-off \(chargeLimit)"))
+                    _ = powerCommandQueue.sync { shell(PrivilegedHelper.sudo("charge-off \(chargeLimit)")) }
                 } else {
-                    _ = shell(PrivilegedHelper.sudo("charge-on \(chargeLimit)"))
+                    _ = powerCommandQueue.sync { shell(PrivilegedHelper.sudo("charge-on \(chargeLimit)")) }
                 }
             }
         }
@@ -589,12 +593,19 @@ public class BatteryManager: ObservableObject {
             setIfChanged(&self.isBypassActive, false)
         }
 
-        if let rawTemp = dict["Temperature"] as? Double {
-            let t = rawTemp / 100.0
-            if abs(self.temperature - t) >= 0.05 { self.temperature = t }
-        } else if let rawTempInt = dict["Temperature"] as? Int {
-            let t = Double(rawTempInt) / 100.0
-            if abs(self.temperature - t) >= 0.05 { self.temperature = t }
+        let batteryData = dict["BatteryData"] as? [String: Any]
+        let rawTemperature = dict["Temperature"] as? NSNumber
+            ?? batteryData?["Temperature"] as? NSNumber
+            ?? packTemperature()
+        if let rawTemperature {
+            // AppleSmartBattery reports tenths of Kelvin. Older firmware may
+            // expose centi-Celsius; use that only when Kelvin is implausible.
+            let raw = rawTemperature.doubleValue
+            let kelvinCelsius = raw / 10 - 273.15
+            let celsius = (-20...100).contains(kelvinCelsius) ? kelvinCelsius : raw / 100
+            if (-20...100).contains(celsius), abs(self.temperature - celsius) >= 0.05 {
+                self.temperature = celsius
+            }
         }
 
         if let rawVolt = dict["Voltage"] as? Double {
@@ -655,6 +666,20 @@ public class BatteryManager: ObservableObject {
         }
         checkTemperatureAlert()
         checkSmartSafetyAlerts()
+    }
+
+    /// Recent macOS versions keep the sensor in the AppleSmartBatteryPack child,
+    /// while the AppleSmartBattery parent no longer publishes a Temperature key.
+    private func packTemperature() -> NSNumber? {
+        let pack = IOServiceGetMatchingService(kIOMainPortDefault,
+                                               IOServiceMatching("AppleSmartBatteryPack"))
+        guard pack != 0 else { return nil }
+        defer { IOObjectRelease(pack) }
+        var properties: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(pack, &properties, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+              let dictionary = properties?.takeRetainedValue() as? [String: Any],
+              let batteryData = dictionary["BatteryData"] as? [String: Any] else { return nil }
+        return batteryData["Temperature"] as? NSNumber
     }
 
     // MARK: - Smart Safety & Anti-Wear Alerts
@@ -869,6 +894,7 @@ public class BatteryManager: ObservableObject {
 
         // 2. Normal power state
         if !isPluggedIn {
+            hasReachedChargeLimit = false
             setIfChanged(&self.isBypassActive, false)
             // Keep firmware ceiling armed even while on battery if protection is enabled,
             // so plugging in while asleep won't overshoot the limit
@@ -883,6 +909,7 @@ public class BatteryManager: ObservableObject {
 
         // Plugged in
         if isTopUpActive {
+            hasReachedChargeLimit = false
             setChargingInhibited(false)
             if currentLevel >= 100 {
                 isTopUpActive = false
@@ -895,16 +922,18 @@ public class BatteryManager: ObservableObject {
 
         if isProtectionEnabled {
             if currentLevel >= chargeLimit {
+                hasReachedChargeLimit = true
                 // Chỉ gọi sudo ghi lại SMC khi khóa phần cứng chưa active hoặc đang có dòng sạc vào pin
                 let needsUrgentLock = !isBypassActive || isCharging || amperage > 120
                 setChargingInhibited(true, forceImmediate: needsUrgentLock)
                 setIfChanged(&statusMessage, tr("Nguồn AC trực tiếp (Đã khóa \(chargeLimit)% chống chai pin)", "Direct AC Power (Locked at \(chargeLimit)% to protect battery)"))
             } else if currentLevel <= max(10, chargeLimit - 3) {
+                hasReachedChargeLimit = false
                 setChargingInhibited(false)
                 setIfChanged(&statusMessage, tr("Đang sạc bù lên \(chargeLimit)% (\(currentLevel)%)", "Recharging up to \(chargeLimit)% (\(currentLevel)%)"))
             } else {
                 // Hysteresis band (e.g. 78% - 79% when limit is 80%)
-                if isBypassActive {
+                if hasReachedChargeLimit {
                     setChargingInhibited(true)
                     setIfChanged(&statusMessage, tr("Nguồn AC trực tiếp (\(currentLevel)%)", "Direct AC Power (\(currentLevel)%)"))
                 } else {
@@ -913,6 +942,7 @@ public class BatteryManager: ObservableObject {
                 }
             }
         } else {
+            hasReachedChargeLimit = false
             setChargingInhibited(false)
             setIfChanged(&statusMessage, isFullyCharged ? tr("Đã sạc đầy 100%", "Fully charged 100%") : tr("Đang sạc thường (\(currentLevel)%)", "Standard charging (\(currentLevel)%)"))
         }
@@ -928,23 +958,11 @@ public class BatteryManager: ObservableObject {
 
         if !inhibit {
             setIfChanged(&self.isBypassActive, false)
-            // Determine whether we are recharging up to `chargeLimit` (keep ceiling armed!)
-            // vs. completely unlocking to 100% (Protection OFF, Top-Up 100%, or Calibration charging)
-            let keepCeilingArmed = isProtectionEnabled && !isTopUpActive && (calibrationState == .idle)
-
-            if keepCeilingArmed {
-                // Keep firmware ceiling (CHLT / PowerUI) armed at `chargeLimit` so Mac stops at `chargeLimit` even during Sleep!
-                if NativePowerUIClient.shared.isSupported && chargeLimit >= 80 {
-                    if stateOrLimitChanged || !NativePowerUIClient.shared.isCurrentlyEnabled() || NativePowerUIClient.shared.currentLimit() != chargeLimit {
-                        _ = NativePowerUIClient.shared.setLimit(chargeLimit)
-                    }
-                }
-            } else {
-                // Full 100% unlock: disable native macOS PowerUI MCL
-                if NativePowerUIClient.shared.isSupported {
-                    if stateOrLimitChanged || NativePowerUIClient.shared.isCurrentlyEnabled() {
-                        _ = NativePowerUIClient.shared.disable()
-                    }
+            // Below the target while awake, release the early firmware ceiling.
+            // The sleep handler re-arms the target limit before the Mac sleeps.
+            if NativePowerUIClient.shared.isSupported {
+                if stateOrLimitChanged || NativePowerUIClient.shared.isCurrentlyEnabled() {
+                    _ = NativePowerUIClient.shared.disable()
                 }
             }
 
@@ -954,10 +972,12 @@ public class BatteryManager: ObservableObject {
                 lastAppliedInhibitState = false
                 lastAppliedLimit = chargeLimit
                 lastSMCWriteDate = now
-                let targetCeiling = keepCeilingArmed ? chargeLimit : 100
-                DispatchQueue.global(qos: .utility).async {
-                    let (_, _) = shell(PrivilegedHelper.sudo("charge-on \(targetCeiling)"))
+                smcCommandGeneration &+= 1
+                let generation = smcCommandGeneration
+                powerCommandQueue.async {
+                    let (_, _) = shell(PrivilegedHelper.sudo("charge-on 100"))
                     DispatchQueue.main.async {
+                        guard self.smcCommandGeneration == generation else { return }
                         self.setIfChanged(&self.isBypassActive, false)
                         self.refreshBatteryInfo()
                     }
@@ -985,11 +1005,14 @@ public class BatteryManager: ObservableObject {
                 lastAppliedInhibitState = true
                 lastAppliedLimit = chargeLimit
                 lastSMCWriteDate = now
+                smcCommandGeneration &+= 1
+                let generation = smcCommandGeneration
                 let limitToLock = chargeLimit
                 let cmd = PrivilegedHelper.sudo("charge-off \(limitToLock)")
-                DispatchQueue.global(qos: .utility).async {
+                powerCommandQueue.async {
                     let (out, code) = shell(cmd)
                     DispatchQueue.main.async {
+                        guard self.smcCommandGeneration == generation else { return }
                         if code == 0 {
                             self.setIfChanged(&self.isBypassActive, self.isPluggedIn)
                             self.updateAppNapProtection()
@@ -1008,20 +1031,21 @@ public class BatteryManager: ObservableObject {
     /// tránh việc Mac bị kẹt ngắt sạc khi HyperMac đã tắt, trong khi vẫn giữ trần `CHLT` nếu đang bật bảo vệ.
     public func restoreOnTerminateSync() {
         guard hasBattery else { return }
+        smcCommandGeneration &+= 1
         let keepCeiling = isProtectionEnabled && !isTopUpActive && (calibrationState == .idle)
         if keepCeiling {
             if NativePowerUIClient.shared.isSupported && chargeLimit >= 80 {
                 _ = NativePowerUIClient.shared.setLimit(chargeLimit)
             }
             if isHelperInstalled {
-                _ = shell(PrivilegedHelper.sudo("charge-on \(chargeLimit) 2>/dev/null"))
+                _ = powerCommandQueue.sync { shell(PrivilegedHelper.sudo("charge-on \(chargeLimit) 2>/dev/null")) }
             }
         } else {
             if NativePowerUIClient.shared.isSupported {
                 _ = NativePowerUIClient.shared.disable()
             }
             if isHelperInstalled {
-                _ = shell(PrivilegedHelper.sudo("charge-on 100 2>/dev/null"))
+                _ = powerCommandQueue.sync { shell(PrivilegedHelper.sudo("charge-on 100 2>/dev/null")) }
             }
         }
     }
