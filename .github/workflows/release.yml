@@ -5,18 +5,14 @@ on:
     branches:
       - main
     tags:
-      - 'v*'
+      - latest
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag đã tạo, ví dụ v2.0.0'
-        required: true
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ inputs.tag_name || github.ref_name }}
+  group: release-latest
   cancel-in-progress: false
 
 jobs:
@@ -27,49 +23,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # Branch push build commit vừa push; tag/manual run build đúng tag đã chọn.
-          ref: ${{ inputs.tag_name || github.sha }}
+          # Build commit của sự kiện hiện tại; tag phát hành luôn là `latest`.
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Validate Release Tag
+      - name: Prepare Latest Release
         id: vars
-        env:
-          RELEASE_EVENT: ${{ github.event_name }}
-          RELEASE_REF: ${{ github.ref }}
-          RELEASE_REF_NAME: ${{ github.ref_name }}
-          RELEASE_INPUT_TAG: ${{ inputs.tag_name }}
         run: |
           set -euo pipefail
-          VERSION="$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')"
-          if [[ "$RELEASE_EVENT" == "push" && "$RELEASE_REF" == "refs/heads/main" ]]; then
-            # Mỗi push main cập nhật release ổn định theo version.json.
-            TAG_NAME="v$VERSION"
-          else
-            TAG_NAME="${RELEASE_INPUT_TAG:-$RELEASE_REF_NAME}"
-          fi
-
-          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Tag không hợp lệ: $TAG_NAME"
+          if [[ "$GITHUB_REF" != "refs/heads/main" && "$GITHUB_REF" != "refs/tags/latest" ]]; then
+            echo "::error::Chỉ phát hành build từ main hoặc tag latest; ref hiện tại là $GITHUB_REF."
             exit 1
           fi
-          if [[ "$TAG_NAME" != "v$VERSION" && "$TAG_NAME" != "v$VERSION"-* ]]; then
-            echo "::error::Tag $TAG_NAME không khớp version.json ($VERSION)."
-            exit 1
-          fi
-
-          # Main push có thể tạo tag mới qua action-gh-release hoặc cập nhật
-          # assets của tag phiên bản đã phát hành. Tag/manual run phải có sẵn.
-          if [[ "$RELEASE_EVENT" != "push" || "$RELEASE_REF" != "refs/heads/main" ]]; then
-            if ! git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
-              echo "::error::Tag $TAG_NAME chưa tồn tại."
-              exit 1
-            fi
-            if [ "$(git rev-list -n 1 "refs/tags/$TAG_NAME")" != "$(git rev-parse HEAD)" ]; then
-              echo "::error::Checkout không trùng commit của tag $TAG_NAME."
-              exit 1
-            fi
-          fi
-          printf 'tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+          printf 'tag=latest\n' >> "$GITHUB_OUTPUT"
           python3 - <<'PY'
           import json
           from pathlib import Path
@@ -245,9 +211,9 @@ jobs:
           codesign --verify --deep --strict build/HyperMac.app
           BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/HyperMac.app/Contents/Info.plist)"
           TAG_VERSION="${{ steps.vars.outputs.tag }}"
-          echo "🏷 Phiên bản app: $BUNDLE_VERSION; release: $TAG_VERSION"
-          if [ "v$BUNDLE_VERSION" != "${TAG_VERSION%%-*}" ]; then
-            echo "::error::Phiên bản trong app ($BUNDLE_VERSION) không khớp tag ($TAG_VERSION)."
+          echo "🏷 Phiên bản app: $BUNDLE_VERSION; GitHub Release endpoint dùng tag: $TAG_VERSION"
+          if [ "$TAG_VERSION" != "latest" ] || [ -z "$BUNDLE_VERSION" ]; then
+            echo "::error::Workflow phải phát hành dưới tag ổn định 'latest' và app phải có bundle version."
             exit 1
           fi
 
@@ -255,17 +221,22 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
-          name: HyperMac
+          name: HyperMac — Latest
           target_commitish: ${{ github.sha }}
           body_path: release_notes.md
           files: |
             build/HyperMac.dmg
             build/HyperMac.zip
           fail_on_unmatched_files: true
+          overwrite_files: true
           draft: false
-          # Tag có hậu tố (v2.0.0-rc1, v2.0.0-test) → pre-release thử nghiệm.
-          prerelease: ${{ contains(steps.vars.outputs.tag, '-') }}
+          prerelease: false
           make_latest: true
+
+      - name: Point Stable Tag to This Build
+        run: |
+          git tag --force latest HEAD
+          git push --force origin refs/tags/latest
 
       - name: Cleanup Signing Keychain
         if: always()
