@@ -9,6 +9,7 @@ struct FanControlCardView: View {
             VStack(alignment: .leading, spacing: 7) {
                 header
                 modeRow
+                if fan.mode == .curve { curveEditor }
                 sliderRow
                 statusRow
             }
@@ -76,6 +77,7 @@ struct FanControlCardView: View {
             modeButton(tr("Hệ thống", "System"), active: fan.mode == .system, requiresHelper: false) { fan.selectSystem() }
             modeButton("Medium", active: fan.mode == .medium) { fan.selectMedium() }
             modeButton("High", active: fan.mode == .high) { fan.selectHigh() }
+            modeButton(tr("Đường cong", "Curve"), active: fan.mode == .curve) { fan.selectCurve() }
         }
     }
 
@@ -141,6 +143,80 @@ struct FanControlCardView: View {
             .font(.system(size: FS.caption))
             .foregroundStyle(.tertiary)
         }
+    }
+
+    private var curveEditor: some View {
+        VStack(spacing: 5) {
+            HStack {
+                Text(tr("Cảm biến", "Sensor"))
+                    .font(.system(size: FS.caption, weight: .medium))
+                Picker("", selection: Binding(
+                    get: { fan.curve.sensor },
+                    set: { fan.curve.sensor = $0 }
+                )) {
+                    ForEach(FanCurveSensor.allCases, id: \.self) { sensor in
+                        Text(sensor.title).tag(sensor)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                Spacer()
+                Button(tr("Mặc định", "Reset")) { fan.resetCurve() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: FS.caption))
+                    .foregroundStyle(Color.accentColor)
+            }
+            GeometryReader { geo in
+                let width = max(1, geo.size.width - 18)
+                let height: CGFloat = 86
+                ZStack {
+                    Path { path in
+                        path.move(to: CGPoint(x: 9, y: height + 5))
+                        path.addLine(to: CGPoint(x: width + 9, y: height + 5))
+                        path.move(to: CGPoint(x: 9, y: 5))
+                        path.addLine(to: CGPoint(x: 9, y: height + 5))
+                    }
+                    .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                    Path { path in
+                        for (index, point) in fan.curve.points.enumerated() {
+                            let position = CGPoint(x: 9 + (point.temperature - 35) / 55 * width,
+                                                   y: 5 + (100 - point.percent) / 100 * height)
+                            if index == 0 { path.move(to: position) } else { path.addLine(to: position) }
+                        }
+                    }
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    ForEach(fan.curve.points.indices, id: \.self) { index in
+                        let point = fan.curve.points[index]
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                            .position(x: 9 + (point.temperature - 35) / 55 * width,
+                                      y: 5 + (100 - point.percent) / 100 * height)
+                            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("fanCurveGraph")).onChanged { drag in
+                                fan.updateCurvePoint(at: index,
+                                    temperature: 35 + (drag.location.x - 9) / width * 55,
+                                    percent: 100 - (drag.location.y - 5) / height * 100)
+                            })
+                            .help("\(Int(point.temperature))°C → \(Int(point.percent))%")
+                    }
+                }
+                .coordinateSpace(name: "fanCurveGraph")
+            }
+            .frame(height: 101)
+            HStack {
+                Text("35°C")
+                Spacer()
+                Text(tr("Kéo điểm để chỉnh °C và %", "Drag points to set °C and %"))
+                Spacer()
+                Text("90°C")
+            }
+            .font(.system(size: FS.caption))
+            .foregroundStyle(.secondary)
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: Rad.sm).fill(Color.primary.opacity(0.04)))
     }
 
     @ViewBuilder

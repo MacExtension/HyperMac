@@ -151,6 +151,8 @@ private struct SMCSensorKey {
     let name: String
     let label: String
     let group: Group
+    let byteCount: UInt32
+    let dataType: UInt32
 }
 
 /// Đọc nhiệt độ nhân CPU/GPU thật từ AppleSMC (kiểu `flt `) — cùng nguồn với Macs Fan Control / Stats.
@@ -241,14 +243,34 @@ private final class SMCTempReader {
 
     private func discover() -> [SMCSensorKey] {
         let flt = Self.fourCC("flt ")
+        let sp78 = Self.fourCC("sp78")
         func probe(_ name: String, _ label: String, _ group: SMCSensorKey.Group) -> SMCSensorKey? {
             let code = Self.fourCC(name)
-            guard let info = call(cmd: 9, key: code),
-                  Self.u32(info, 28) == 4, Self.u32(info, 32) == flt else { return nil }
-            return SMCSensorKey(code: code, name: name, label: label, group: group)
+            guard let info = call(cmd: 9, key: code) else { return nil }
+            let size = Self.u32(info, 28)
+            let type = Self.u32(info, 32)
+            guard (size == 4 && type == flt) || (size == 2 && type == sp78) else { return nil }
+            return SMCSensorKey(code: code, name: name, label: label, group: group,
+                                byteCount: size, dataType: type)
         }
 
-        let cat = Self.catalog(for: Self.chipGeneration())
+        let generation = Self.chipGeneration()
+        if generation == 0 {
+            var intel: [SMCSensorKey] = (0..<10).compactMap { index in
+                probe("TC\(index)C", "CPU Core \(index + 1)", .cpu)
+            }
+            if intel.isEmpty, let package = probe("TC0P", "CPU Package", .cpu) {
+                intel.append(package)
+            }
+            if let gpu = probe("TG0D", "GPU Die", .gpu) { intel.append(gpu) }
+            if let ssd = probe("Ts0P", "SSD", .nand) ?? probe("TH0P", "SSD", .nand) {
+                intel.append(ssd)
+            }
+            if let battery = probe("TB0T", "Battery", .battery) { intel.append(battery) }
+            if let hotspot = probe("TC0D", "CPU Diode", .hotspot) { intel.append(hotspot) }
+            return intel
+        }
+        let cat = Self.catalog(for: generation)
         var found: [SMCSensorKey] = cat.cpu.compactMap { probe($0.key, $0.label, .cpu) }
         var gpuIndex = 0
         for key in cat.gpu {
@@ -272,8 +294,14 @@ private final class SMCTempReader {
 
         for k in keys ?? [] {
             var sample: Double?
-            if let v = call(cmd: 5, key: k.code, size: 4) {
-                let raw = Double(Float(bitPattern: Self.u32(v, 48)))
+            if let v = call(cmd: 5, key: k.code, size: k.byteCount) {
+                let raw: Double
+                if k.dataType == Self.fourCC("sp78") {
+                    let encoded = UInt16(v[48]) << 8 | UInt16(v[49])
+                    raw = Double(Int16(bitPattern: encoded)) / 256.0
+                } else {
+                    raw = Double(Float(bitPattern: Self.u32(v, 48)))
+                }
                 if raw >= 10.0 && raw < 120.0 { sample = raw }
             }
             // Cảm biến M2 thỉnh thoảng trả 0 / giá trị rác → giữ giá trị hợp lệ gần nhất (giống Stats).

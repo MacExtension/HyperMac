@@ -12,7 +12,11 @@ private final class SMCFanReader {
     }
 
     func readFloat(key: String) -> Double? {
-        guard let b = smc.readKeyBytes(key), b.count == 4 else { return nil }
+        guard let b = smc.readKeyBytes(key) else { return nil }
+        if b.count == 2 {
+            return Double((UInt16(b[0]) << 8) | UInt16(b[1])) / 4.0
+        }
+        guard b.count == 4 else { return nil }
         let bits = b.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         let val = Double(Float(bitPattern: bits))
         return val.isFinite && val >= 0 ? val : nil
@@ -69,6 +73,7 @@ public final class FanManager: ObservableObject {
         case medium
         case high
         case manual
+        case curve
     }
 
     nonisolated private static let requiredHelperVersion = PrivilegedHelper.requiredVersion
@@ -87,6 +92,14 @@ public final class FanManager: ObservableObject {
     @Published public private(set) var isBusy: Bool = false
     @Published public private(set) var errorMessage: String? = nil
     @Published public private(set) var safetyTripped: Bool = false
+    @Published var curve = FanCurve() {
+        didSet {
+            if let data = try? JSONEncoder().encode(curve) {
+                UserDefaults.standard.set(data, forKey: "fan_custom_curve")
+            }
+            if mode == .curve { scheduleCurveApply() }
+        }
+    }
 
     // UI View State (Stored here to prevent CommandLineTools SwiftUIMacros @State crash)
     @Published public var sliderPercent: Double = 50
@@ -99,12 +112,18 @@ public final class FanManager: ObservableObject {
     private var pollTimer: Timer?
     private var smcPath: String?
     private var pendingApply: DispatchWorkItem?
+    private var pendingCurveApply: DispatchWorkItem?
+    private var lastCurveWriteDate = Date.distantPast
     private var isPopoverVisible = false
     private let commandExecutor = FanCommandExecutor()
 
     public var needsSafetyMonitoring: Bool { isAvailable && (mode != .system || safetyTripped) }
 
     private init() {
+        if let data = UserDefaults.standard.data(forKey: "fan_custom_curve"),
+           let saved = try? JSONDecoder().decode(FanCurve.self, from: data), saved.points.count == 5 {
+            curve = saved
+        }
         smcPath = FanManager.locateSMC()
         refreshStatic()
         refreshRPM()
@@ -138,6 +157,7 @@ public final class FanManager: ObservableObject {
 
     public func selectSystem() {
         pendingApply?.cancel()
+        pendingCurveApply?.cancel()
         mode = .system
         targetRPM = 0
         errorMessage = nil
@@ -146,6 +166,50 @@ public final class FanManager: ObservableObject {
 
     public func selectMedium() { apply(rpm: mediumRPM, as: .medium) }
     public func selectHigh() { apply(rpm: highRPM, as: .high) }
+
+    public func selectCurve() {
+        guard isAvailable, !safetyTripped else { return }
+        mode = .curve
+        applyCurveIfNeeded(force: true)
+        startPolling()
+    }
+
+    public func resetCurve() { curve = FanCurve() }
+
+    public func updateCurvePoint(at index: Int, temperature: Double, percent: Double) {
+        curve.movePoint(at: index, temperature: temperature, percent: percent)
+    }
+
+    private func curveTemperature() -> Double {
+        let thermal = ThermalManager.shared
+        let values = [thermal.cpuPeakTemp, thermal.gpuAvgTemp, thermal.hotspotTemp].filter { $0 > 0 }
+        switch curve.sensor {
+        case .cpu: return thermal.cpuPeakTemp > 0 ? thermal.cpuPeakTemp : (values.max() ?? 0)
+        case .gpu: return thermal.gpuAvgTemp > 0 ? thermal.gpuAvgTemp : (values.max() ?? 0)
+        case .hotspot: return thermal.hotspotTemp > 0 ? thermal.hotspotTemp : (values.max() ?? 0)
+        case .hottest: return values.max() ?? 0
+        }
+    }
+
+    private func scheduleCurveApply() {
+        pendingCurveApply?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in self?.applyCurveIfNeeded(force: true) }
+        }
+        pendingCurveApply = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
+    }
+
+    private func applyCurveIfNeeded(force: Bool = false) {
+        guard mode == .curve, isHelperReady, !safetyTripped, !isBusy else { return }
+        let temperature = curveTemperature()
+        guard temperature > 0 else { return }
+        let rpm = rpm(forPercent: max(Double(minPercent), curve.percent(at: temperature)))
+        guard force || (abs(rpm - targetRPM) >= max(80, maxRPM * 0.03) &&
+                        Date().timeIntervalSince(lastCurveWriteDate) >= 5) else { return }
+        lastCurveWriteDate = Date()
+        apply(rpm: rpm, as: .curve)
+    }
 
     /// Gọi liên tục khi kéo thanh trượt; debounce để không gọi sudo mỗi pixel.
     public func setManual(rpm: Double) {
@@ -276,10 +340,13 @@ public final class FanManager: ObservableObject {
 
     private func verifyTarget(expected: [Int], revision: UInt64, attempt: Int = 0) {
         guard commandExecutor.isLatest(revision), mode != .system else { return }
-        let observed = expected.indices.map { smcReader.readFloat(key: "F\($0)Tg") }
+        let observed = expected.indices.map { i in
+            smcReader.readFloat(key: "F\(i)Tg") ?? smcReader.readFloat(key: "F\(i)Mn")
+        }
         let modes = expected.indices.map { smcReader.readMode(key: "F\($0)Md") }
         let matches = expected.indices.allSatisfy { i in
-            modes[i] == 1 && observed[i].map { abs($0 - Double(expected[i])) <= 5 } == true
+            (modes[i] == 1 || modes[i] == nil) &&
+            observed[i].map { abs($0 - Double(expected[i])) <= 5 } == true
         }
         if matches {
             isBusy = false
@@ -410,6 +477,7 @@ public final class FanManager: ObservableObject {
     private func tick() {
         refreshRPM()
         enforceSafety()
+        applyCurveIfNeeded()
         ThermalManager.shared.setFanThermalMonitorNeeded(needsSafetyMonitoring)
     }
 
