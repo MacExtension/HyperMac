@@ -4,6 +4,10 @@ import ImageIO
 import SwiftUI
 import Combine
 
+private final class ClipboardHUDPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
 // MARK: - Clipboard Item Model
 
 public enum ClipType: String, Codable, CaseIterable, Sendable {
@@ -142,6 +146,9 @@ public enum ClipboardHUDShortcut: String, CaseIterable, Codable, Sendable {
 @MainActor
 public class ClipboardManager: ObservableObject {
     public static let shared = ClipboardManager()
+    nonisolated private static let maxTextBytes = 1 * 1024 * 1024
+    nonisolated private static let maxRichTextBytes = 2 * 1024 * 1024
+    nonisolated private static let maxImageBytes = 20 * 1024 * 1024
 
     // Published State
     @Published public var items: [ClipItem] = []
@@ -201,7 +208,12 @@ public class ClipboardManager: ObservableObject {
     private let imageProcessingQueue = DispatchQueue(label: "com.opensource.hypermac.clipboard.image", qos: .utility)
     private var previousApp: NSRunningApplication?
     private var hudPanel: NSPanel?
+    private var hudLocalClickMonitor: Any?
+    private var hudGlobalClickMonitor: Any?
     private let storageURL: URL
+    private let legacyStorageURL: URL
+    private let vault: ClipboardVault?
+    private let storageQueue = DispatchQueue(label: "com.opensource.hypermac.clipboard.storage", qos: .utility)
     public let imagesDirURL: URL
 
     private init() {
@@ -209,9 +221,14 @@ public class ClipboardManager: ObservableObject {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let hypermacDir = appSupport.appendingPathComponent("HyperMac", isDirectory: true)
         try? FileManager.default.createDirectory(at: hypermacDir, withIntermediateDirectories: true)
-        self.storageURL = hypermacDir.appendingPathComponent("clipboard.json")
+        self.storageURL = hypermacDir.appendingPathComponent("clipboard.hmclip")
+        self.legacyStorageURL = hypermacDir.appendingPathComponent("clipboard.json")
+        self.vault = try? ClipboardVault(directory: hypermacDir)
         self.imagesDirURL = hypermacDir.appendingPathComponent("ClipboardImages", isDirectory: true)
-        try? FileManager.default.createDirectory(at: self.imagesDirURL, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: self.imagesDirURL, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: imagesDirURL.path)
+        if vault == nil { appLog("⚠️ Clipboard vault key unavailable; history will stay in memory only.") }
 
         // Load Settings
         if UserDefaults.standard.object(forKey: "clipboard_monitoring_enabled") != nil {
@@ -351,7 +368,7 @@ public class ClipboardManager: ObservableObject {
         // A. File URLs
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
             let filePaths = urls.filter { $0.isFileURL }.map { $0.path }
-            if !filePaths.isEmpty {
+            if !filePaths.isEmpty, filePaths.joined(separator: "\n").utf8.count <= Self.maxTextBytes {
                 let count = filePaths.count
                 let firstPath = filePaths.first!
                 let firstFilename = (firstPath as NSString).lastPathComponent
@@ -379,7 +396,7 @@ public class ClipboardManager: ObservableObject {
             let size = image.size
             if size.width > 2 && size.height > 2 {
                 let clipID = UUID()
-                let fileName = "\(clipID.uuidString).png"
+                let fileName = "\(clipID.uuidString).hmclip"
                 let fileURL = self.imagesDirURL.appendingPathComponent(fileName)
                 let title = "Ảnh (\(Int(size.width)) × \(Int(size.height))px)"
                 let detail = "Định dạng ảnh clipboard"
@@ -400,12 +417,22 @@ public class ClipboardManager: ObservableObject {
                         originalData = rawTIFF
                     }
 
-                    if let origData = originalData {
-                        try? origData.write(to: fileURL, options: .atomic)
+                    guard let originalData, originalData.count <= Self.maxImageBytes else {
+                        appLog("⚠️ Clipboard image exceeds per-item limit; skipped.")
+                        return
+                    }
+
+                    if let vault = self?.vault {
+                        do {
+                            let cipher = try vault.seal(originalData, context: fileName)
+                            try cipher.write(to: fileURL, options: .atomic)
+                        } catch {
+                            appLog("⚠️ Clipboard image encryption failed: \(error.localizedDescription)")
+                        }
                     }
 
                     // Thumbnail tối đa 800 px (400 pt Retina) qua ImageIO (an toàn ngoài main thread).
-                    let thumbData = originalData.flatMap { ClipboardManager.thumbnailPNG(from: $0, maxPixelSize: 800) }
+                    let thumbData = ClipboardManager.thumbnailPNG(from: originalData, maxPixelSize: 800)
 
                     Task { @MainActor [weak self] in
                         guard let self else {
@@ -416,6 +443,7 @@ public class ClipboardManager: ObservableObject {
                             queue.async { try? FileManager.default.removeItem(at: fileURL) }
                             return
                         }
+                        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
                         self.appendClip(ClipItem(
                             id: clipID,
                             type: .image,
@@ -455,6 +483,7 @@ public class ClipboardManager: ObservableObject {
 
         // D. URLs
         if let string = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           string.utf8.count <= Self.maxTextBytes,
            (string.lowercased().hasPrefix("http://") || string.lowercased().hasPrefix("https://")),
            let url = URL(string: string), url.host != nil {
             let title = string
@@ -476,13 +505,18 @@ public class ClipboardManager: ObservableObject {
 
         // E. Plain & Rich Text
         if let string = pb.string(forType: .string), !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard string.utf8.count <= Self.maxTextBytes else {
+                appLog("⚠️ Clipboard text exceeds per-item limit; skipped.")
+                return
+            }
             let lines = string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             let title = lines.first ?? "Văn bản"
             let charCount = string.count
             let lineCount = lines.count
             let detail = lineCount > 1 ? "\(lineCount) dòng • \(charCount) ký tự" : "\(charCount) ký tự"
 
-            let rtfData = pb.data(forType: .rtf)
+            let candidateRTF = pb.data(forType: .rtf)
+            let rtfData = candidateRTF.flatMap { $0.count <= Self.maxRichTextBytes ? $0 : nil }
 
             appendClip(ClipItem(
                 id: UUID(),
@@ -803,7 +837,7 @@ public class ClipboardManager: ObservableObject {
             if let fileName = item.imageFileName {
                 let fileURL = imagesDirURL.appendingPathComponent(fileName)
                 if FileManager.default.fileExists(atPath: fileURL.path),
-                   let data = try? Data(contentsOf: fileURL) {
+                   let data = imageData(for: item) {
                     fullImage = NSImage(data: data)
                     pb.setData(data, forType: .png)
                 }
@@ -864,6 +898,12 @@ public class ClipboardManager: ObservableObject {
         let fallback = imagesDirURL.appendingPathComponent("\(item.id.uuidString).png")
         if FileManager.default.fileExists(atPath: fallback.path) { return fallback }
         return nil
+    }
+
+    public func imageData(for item: ClipItem) -> Data? {
+        guard let url = imageURL(for: item), let bytes = try? Data(contentsOf: url) else { return nil }
+        guard url.pathExtension == "hmclip" else { return bytes }
+        return try? vault?.open(bytes, context: url.lastPathComponent)
     }
 
     public func deleteAssociatedImage(for item: ClipItem) {
@@ -927,20 +967,46 @@ public class ClipboardManager: ObservableObject {
             panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: panelHeight), display: true)
             panel.makeKeyAndOrderFront(nil)
             NSApplication.shared.activate(ignoringOtherApps: true)
+            startHUDClickMonitors()
         }
+    }
+
+    private func startHUDClickMonitors() {
+        stopHUDClickMonitors()
+        let types: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+        hudLocalClickMonitor = NSEvent.addLocalMonitorForEvents(matching: types) { [weak self] event in
+            self?.closeHUDIfOutsideClick()
+            return event
+        }
+        hudGlobalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: types) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.closeHUDIfOutsideClick() }
+        }
+    }
+
+    private func closeHUDIfOutsideClick() {
+        guard isHUDVisible, let panel = hudPanel else { return }
+        if !panel.frame.contains(NSEvent.mouseLocation) { hideHUD() }
+    }
+
+    private func stopHUDClickMonitors() {
+        if let hudLocalClickMonitor { NSEvent.removeMonitor(hudLocalClickMonitor) }
+        if let hudGlobalClickMonitor { NSEvent.removeMonitor(hudGlobalClickMonitor) }
+        hudLocalClickMonitor = nil
+        hudGlobalClickMonitor = nil
     }
 
     public func hideHUD() {
         guard isHUDVisible else { return }
+        stopHUDClickMonitors()
         self.isHUDVisible = false
         gIsClipboardHUDVisible = false
         hudPanel?.orderOut(nil)
     }
 
     private func createHUDPanel() {
-        let panel = NSPanel(
+        let panel = ClipboardHUDPanel(
             contentRect: NSRect(x: 0, y: 0, width: 430, height: 520),
-            styleMask: [.nonactivatingPanel, .titled, .fullSizeContentView],
+            styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
         )
@@ -962,12 +1028,16 @@ public class ClipboardManager: ObservableObject {
     // MARK: - Disk Persistence
 
     private func saveItemsToDisk() {
+        guard let vault else { return }
         let itemsToSave = self.items
         let url = self.storageURL
-        DispatchQueue.global(qos: .utility).async {
+        let legacyURL = self.legacyStorageURL
+        storageQueue.async {
             do {
                 let data = try JSONEncoder().encode(itemsToSave)
-                try data.write(to: url, options: .atomic)
+                let cipher = try vault.seal(data, context: "history")
+                try cipher.write(to: url, options: .atomic)
+                try? FileManager.default.removeItem(at: legacyURL)
             } catch {
                 appLog("Failed to save clipboard items: \(error.localizedDescription)")
             }
@@ -975,13 +1045,17 @@ public class ClipboardManager: ObservableObject {
     }
 
     private func loadItemsFromDisk() {
-        guard FileManager.default.fileExists(atPath: storageURL.path) else { return }
+        let encrypted = FileManager.default.fileExists(atPath: storageURL.path)
+        let sourceURL = encrypted ? storageURL : legacyStorageURL
+        guard FileManager.default.fileExists(atPath: sourceURL.path), let vault else { return }
         do {
-            let data = try Data(contentsOf: storageURL)
+            let stored = try Data(contentsOf: sourceURL)
+            let data = encrypted ? try vault.open(stored, context: "history") : stored
             var loaded = try JSONDecoder().decode([ClipItem].self, from: data)
 
             // Migrate legacy image items to disk storage
             var modified = false
+            var migratedPlainImages: [URL] = []
             for i in 0..<loaded.count {
                 if loaded[i].type == .image {
                     let fileName = loaded[i].imageFileName ?? "\(loaded[i].id.uuidString).png"
@@ -994,11 +1068,29 @@ public class ClipboardManager: ObservableObject {
                         loaded[i].imageFileName = fileName
                         modified = true
                     }
+                    if fileURL.pathExtension != "hmclip", FileManager.default.fileExists(atPath: fileURL.path) {
+                        let encryptedName = "\(loaded[i].id.uuidString).hmclip"
+                        let encryptedURL = imagesDirURL.appendingPathComponent(encryptedName)
+                        do {
+                            let plain = try Data(contentsOf: fileURL)
+                            let cipher = try vault.seal(plain, context: encryptedName)
+                            try cipher.write(to: encryptedURL, options: .atomic)
+                            loaded[i].imageFileName = encryptedName
+                            modified = true
+                            migratedPlainImages.append(fileURL)
+                        } catch {
+                            appLog("⚠️ Clipboard image migration failed: \(error.localizedDescription)")
+                        }
+                    }
                 }
             }
             self.items = loaded
-            if modified {
-                saveItemsToDisk()
+            if modified || !encrypted {
+                let encoded = try JSONEncoder().encode(loaded)
+                let sealed = try vault.seal(encoded, context: "history")
+                try sealed.write(to: storageURL, options: .atomic)
+                try? FileManager.default.removeItem(at: legacyStorageURL)
+                for oldImage in migratedPlainImages { try? FileManager.default.removeItem(at: oldImage) }
             }
             cleanupOrphanImages(validItems: loaded)
         } catch {
@@ -1015,7 +1107,7 @@ public class ClipboardManager: ObservableObject {
                 validFileNames.insert("\(item.id.uuidString).png")
             }
             for file in files {
-                if !validFileNames.contains(file) && (file.hasSuffix(".png") || file.hasSuffix(".jpg") || file.hasSuffix(".tiff")) {
+                if !validFileNames.contains(file) && (file.hasSuffix(".png") || file.hasSuffix(".jpg") || file.hasSuffix(".tiff") || file.hasSuffix(".hmclip")) {
                     let fileURL = self.imagesDirURL.appendingPathComponent(file)
                     try? FileManager.default.removeItem(at: fileURL)
                 }

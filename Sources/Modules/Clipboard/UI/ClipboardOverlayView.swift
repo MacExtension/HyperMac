@@ -134,6 +134,13 @@ public struct ClipboardOverlayView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             }
+            .onChange(of: manager.selectedIndex) {
+                let items = manager.filteredItems
+                guard items.indices.contains(manager.selectedIndex) else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo(items[manager.selectedIndex].id, anchor: .center)
+                }
+            }
         }
     }
 
@@ -271,7 +278,7 @@ public struct ClipboardOverlayView: View {
                             if let data = item.imageData, let img = NSImage(data: data) {
                                 return img
                             }
-                            if let url = manager.imageURL(for: item), let data = try? Data(contentsOf: url) {
+                            if let data = manager.imageData(for: item) {
                                 return NSImage(data: data)
                             }
                             return nil
