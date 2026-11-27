@@ -395,7 +395,28 @@ public class DisplayManager: ObservableObject {
         return tr("Màn hình ngoài \(fallbackNum)", "External Display \(fallbackNum)")
     }
 
-    // MARK: - Built-in Brightness via DisplayServices (Apple Silicon Native)
+    // MARK: - Built-in Brightness via DisplayServices / IODisplay (Intel)
+
+    private func withBuiltInDisplayService<T>(displayID: CGDirectDisplayID,
+                                               _ body: (io_service_t) -> T?) -> T? {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                                           IOServiceMatching("IODisplayConnect"),
+                                           &iterator) == KERN_SUCCESS else { return nil }
+        defer { IOObjectRelease(iterator) }
+        let vendor = CGDisplayVendorNumber(displayID)
+        let model = CGDisplayModelNumber(displayID)
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            defer { IOObjectRelease(service) }
+            guard let info = IODisplayCreateInfoDictionary(service, kIODisplayOnlyPreferredName)?
+                .takeRetainedValue() as? [String: Any],
+                let serviceVendor = info[kDisplayVendorIDKey] as? UInt32,
+                let serviceModel = info[kDisplayProductIDKey] as? UInt32,
+                serviceVendor == vendor, serviceModel == model else { continue }
+            if let result = body(service) { return result }
+        }
+        return nil
+    }
 
     private func getBuiltInBrightness(displayID: CGDirectDisplayID) -> Double {
         if let getFn = dsGetBrightness {
@@ -404,12 +425,23 @@ public class DisplayManager: ObservableObject {
                 return Double(val)
             }
         }
+        if let value: Float = withBuiltInDisplayService(displayID: displayID, { service in
+            var brightness: Float = 0.5
+            return IODisplayGetFloatParameter(service, 0, "brightness" as CFString, &brightness) == KERN_SUCCESS
+                ? brightness : nil
+        }) {
+            return Double(value)
+        }
         return 0.5
     }
 
     private func setBuiltInBrightness(displayID: CGDirectDisplayID, value: Float) {
         if let setFn = dsSetBrightness {
-            _ = setFn(displayID, max(0.0, min(1.0, value)))
+            if setFn(displayID, max(0.0, min(1.0, value))) == 0 { return }
+        }
+        _ = withBuiltInDisplayService(displayID: displayID) { service -> Bool? in
+            IODisplaySetFloatParameter(service, 0, "brightness" as CFString,
+                                       max(0.0, min(1.0, value))) == KERN_SUCCESS ? true : nil
         }
     }
 
